@@ -1,0 +1,68 @@
+﻿name: Release
+
+# Pushing a tag like v0.2.0 builds the launcher and the server on Windows,
+# zips them and publishes a GitHub release with the zip attached.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            server
+
+      - name: Build launcher
+        run: cargo build --release --manifest-path src-tauri/Cargo.toml
+
+      - name: Build server
+        run: cargo build --release --manifest-path server/Cargo.toml
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          if (-not $tag.StartsWith('v')) { $tag = 'dev' }
+          $dir = "Nexus-$tag-windows-x64"
+          New-Item -ItemType Directory $dir | Out-Null
+          Copy-Item src-tauri/target/release/nexus.exe $dir
+          Copy-Item server/target/release/nexus-server.exe $dir
+          Copy-Item README.md $dir
+          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
+          "ZIP=$dir.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Upload artifact (manual runs)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-windows
+          path: ${{ env.ZIP }}
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ZIP }}
+            src-tauri/target/release/nexus.exe
+            server/target/release/nexus-server.exe
+          generate_release_notes: true
+          body: |
+            **Nexus** – all-in-one game launcher for Windows.
+
+            **Install:** download the zip (or `nexus.exe` + `nexus-server.exe` separately), keep both files in the same folder and start `nexus.exe`.
+            The chat & call server starts together with the launcher. Needs the Microsoft WebView2 runtime (already part of Windows 10/11).
+
+            The executables are not code-signed, so Windows SmartScreen may warn: *More info → Run anyway*.
