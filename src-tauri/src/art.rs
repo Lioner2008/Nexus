@@ -1,11 +1,18 @@
 //! SteamGridDB integration: covers (grids), hero banners, logos and icons.
 //! Images are downloaded once into the app data folder and then served locally.
+//!
+//! * `art/`         – automatically matched artwork (can be cleared and re-downloaded)
+//! * `art_custom/`  – artwork the user picked for a single game (never touched by auto-matching)
 
 use crate::{norm, AppState, Art};
+use serde::Serialize;
 use serde_json::Value;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const BASE: &str = "https://www.steamgriddb.com/api/v2";
+const IMG_EXT: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+const MAX_BYTES: usize = 40 * 1024 * 1024;
 
 async fn get(st: &AppState, key: &str, path: &str) -> Result<Value, String> {
     let r = st
@@ -88,7 +95,19 @@ async fn first_url(
     Ok(None)
 }
 
-async fn download(st: &AppState, url: &str, id: &str, kind: &str) -> Result<String, String> {
+fn safe_id(id: &str) -> String {
+    id.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect()
+}
+
+fn url_ext(url: &str) -> &'static str {
+    let last = url.split(['?', '#']).next().unwrap_or("").rsplit('.').next().unwrap_or("");
+    let last = last.to_ascii_lowercase();
+    IMG_EXT.iter().copied().find(|e| *e == last).unwrap_or("png")
+}
+
+async fn fetch_bytes(st: &AppState, url: &str) -> Result<Vec<u8>, String> {
     let bytes = st
         .http
         .get(url)
@@ -100,20 +119,31 @@ async fn download(st: &AppState, url: &str, id: &str, kind: &str) -> Result<Stri
         .bytes()
         .await
         .map_err(|e| e.to_string())?;
-    let ext = url
-        .rsplit('.')
-        .next()
-        .filter(|e| e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric()))
-        .unwrap_or("png");
-    let safe: String = id
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
+    if bytes.len() > MAX_BYTES {
+        return Err("Image is too large (max 40 MB)".into());
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Automatic artwork: stable file name per game and type.
+async fn download(st: &AppState, url: &str, id: &str, kind: &str) -> Result<String, String> {
+    let bytes = fetch_bytes(st, url).await?;
     let dir = st.dir.join("art");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{safe}_{kind}.{ext}"));
+    let path = dir.join(format!("{}_{kind}.{}", safe_id(id), url_ext(url)));
     std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+fn custom_path(st: &AppState, id: &str, kind: &str, ext: &str) -> Result<PathBuf, String> {
+    let dir = st.dir.join("art_custom");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    // unique name so the webview never shows a cached older image
+    Ok(dir.join(format!("{}_{kind}_{ts}.{ext}", safe_id(id))))
 }
 
 fn sgdb_key(st: &AppState) -> String {
@@ -135,15 +165,15 @@ pub async fn ensure_cover(
     name: &str,
     appid: Option<u32>,
 ) -> Result<Option<String>, String> {
+    let art = existing(st, id);
+    if file_ok(&art.cover) {
+        return Ok(art.cover); // also covers user-chosen images
+    }
     let key = sgdb_key(st);
     if key.is_empty() {
         return Ok(None);
     }
-    let art = existing(st, id);
-    if file_ok(&art.cover) {
-        return Ok(art.cover);
-    }
-    if art.cover_tried {
+    if art.cover_tried && !art.cover_custom {
         return Ok(None);
     }
     let mut cover = None;
@@ -160,13 +190,14 @@ pub async fn ensure_cover(
         let mut c = st.cache.lock().unwrap();
         let a = c.art.entry(id.to_string()).or_default();
         a.cover = cover.clone();
+        a.cover_custom = false; // a missing custom file falls back to automatic matching
         a.cover_tried = true;
     }
     st.save_cache();
     Ok(cover)
 }
 
-/// Hero banner, logo and icon for the detail header.
+/// Hero banner, logo and icon for the detail header (skips what the user chose manually).
 pub async fn ensure_extras(
     st: &AppState,
     id: &str,
@@ -180,29 +211,204 @@ pub async fn ensure_extras(
     }
     let (mut hero, mut logo, mut icon) = (None, None, None);
     if let Some(t) = target(st, &key, id, name, appid).await? {
-        let hero_q = [
-            "dimensions=1920x620,3840x1240,1600x650&types=static&nsfw=false",
-            "types=static&nsfw=false",
-        ];
-        if let Some(u) = first_url(st, &key, "heroes", &t, &hero_q).await? {
-            hero = Some(download(st, &u, id, "hero").await?);
+        if !art.hero_custom {
+            let q = [
+                "dimensions=1920x620,3840x1240,1600x650&types=static&nsfw=false",
+                "types=static&nsfw=false",
+            ];
+            if let Some(u) = first_url(st, &key, "heroes", &t, &q).await? {
+                hero = Some(download(st, &u, id, "hero").await?);
+            }
         }
-        if let Some(u) = first_url(st, &key, "logos", &t, &["types=static&nsfw=false"]).await? {
-            logo = Some(download(st, &u, id, "logo").await?);
+        if !art.logo_custom {
+            if let Some(u) = first_url(st, &key, "logos", &t, &["types=static&nsfw=false"]).await? {
+                logo = Some(download(st, &u, id, "logo").await?);
+            }
         }
-        if let Some(u) = first_url(st, &key, "icons", &t, &["nsfw=false"]).await? {
-            icon = Some(download(st, &u, id, "icon").await?);
+        if !art.icon_custom {
+            if let Some(u) = first_url(st, &key, "icons", &t, &["nsfw=false"]).await? {
+                icon = Some(download(st, &u, id, "icon").await?);
+            }
         }
     }
     let out = {
         let mut c = st.cache.lock().unwrap();
         let a = c.art.entry(id.to_string()).or_default();
-        a.hero = hero;
-        a.logo = logo;
-        a.icon = icon;
+        if !a.hero_custom {
+            a.hero = hero;
+        }
+        if !a.logo_custom {
+            a.logo = logo;
+        }
+        if !a.icon_custom {
+            a.icon = icon;
+        }
         a.extras_tried = true;
         a.clone()
     };
+    st.save_cache();
+    Ok(out)
+}
+
+// ───────────────────────────── user-chosen artwork ─────────────────────────────
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArtOption {
+    pub url: String,
+    pub thumb: String,
+    pub width: u64,
+    pub height: u64,
+    pub style: String,
+    pub author: String,
+}
+
+pub async fn list_options(
+    st: &AppState,
+    id: &str,
+    name: &str,
+    appid: Option<u32>,
+    kind: &str,
+) -> Result<Vec<ArtOption>, String> {
+    let key = sgdb_key(st);
+    if key.is_empty() {
+        return Err("Add a SteamGridDB API key in the settings to browse artwork".into());
+    }
+    let (endpoint, query) = match kind {
+        "cover" => ("grids", "dimensions=600x900,342x482,660x930&types=static&nsfw=false"),
+        "hero" => ("heroes", "types=static&nsfw=false"),
+        "logo" => ("logos", "types=static&nsfw=false"),
+        "icon" => ("icons", "nsfw=false"),
+        _ => return Err("Unknown artwork type".into()),
+    };
+    let Some(t) = target(st, &key, id, name, appid).await? else {
+        return Ok(Vec::new());
+    };
+    let v = get(st, &key, &format!("/{endpoint}/{t}?{query}")).await?;
+    let items = v["data"].as_array().cloned().unwrap_or_default();
+    Ok(items
+        .iter()
+        .take(40)
+        .filter_map(|x| {
+            let url = x["url"].as_str()?.to_string();
+            Some(ArtOption {
+                thumb: x["thumb"].as_str().unwrap_or(&url).to_string(),
+                width: x["width"].as_u64().unwrap_or(0),
+                height: x["height"].as_u64().unwrap_or(0),
+                style: x["style"].as_str().unwrap_or("").to_string(),
+                author: x["author"]["name"].as_str().unwrap_or("").to_string(),
+                url,
+            })
+        })
+        .collect())
+}
+
+fn check_kind(kind: &str) -> Result<(), String> {
+    match kind {
+        "cover" | "hero" | "logo" | "icon" => Ok(()),
+        _ => Err("Unknown artwork type".into()),
+    }
+}
+
+/// Removes a previously chosen custom file (only inside art_custom/).
+fn drop_custom_file(st: &AppState, p: &Option<String>) {
+    if let Some(p) = p {
+        let path = Path::new(p);
+        if path.starts_with(st.dir.join("art_custom")) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+pub async fn set_custom(st: &AppState, id: &str, kind: &str, source: &str) -> Result<Art, String> {
+    check_kind(kind)?;
+    let source = source.trim();
+    let target_path = if source.starts_with("https://") {
+        let bytes = fetch_bytes(st, source).await?;
+        let p = custom_path(st, id, kind, url_ext(source))?;
+        std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
+        p
+    } else if source.starts_with("http://") {
+        return Err("Only https:// links are supported".into());
+    } else {
+        let src = Path::new(source);
+        let ext = src
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if !IMG_EXT.contains(&ext.as_str()) {
+            return Err("Choose a PNG, JPG, WEBP, GIF or BMP image".into());
+        }
+        let meta = std::fs::metadata(src).map_err(|_| "File not found".to_string())?;
+        if !meta.is_file() || meta.len() as usize > MAX_BYTES {
+            return Err("Image is missing or too large (max 40 MB)".into());
+        }
+        let p = custom_path(st, id, kind, &ext)?;
+        std::fs::copy(src, &p).map_err(|e| e.to_string())?;
+        p
+    };
+    let path = target_path.to_string_lossy().to_string();
+
+    let (old, out) = {
+        let mut c = st.cache.lock().unwrap();
+        let a = c.art.entry(id.to_string()).or_default();
+        let old = match kind {
+            "cover" => {
+                a.cover_tried = true;
+                a.cover_custom = true;
+                a.cover.replace(path)
+            }
+            "hero" => {
+                a.hero_custom = true;
+                a.hero.replace(path)
+            }
+            "logo" => {
+                a.logo_custom = true;
+                a.logo.replace(path)
+            }
+            _ => {
+                a.icon_custom = true;
+                a.icon.replace(path)
+            }
+        };
+        (old, a.clone())
+    };
+    drop_custom_file(st, &old);
+    st.save_cache();
+    Ok(out)
+}
+
+pub fn reset_custom(st: &AppState, id: &str, kind: &str) -> Result<Art, String> {
+    check_kind(kind)?;
+    let (old, out) = {
+        let mut c = st.cache.lock().unwrap();
+        let a = c.art.entry(id.to_string()).or_default();
+        let old = match kind {
+            "cover" => {
+                a.cover_custom = false;
+                a.cover_tried = false;
+                a.cover.take()
+            }
+            "hero" => {
+                a.hero_custom = false;
+                a.extras_tried = false;
+                a.hero.take()
+            }
+            "logo" => {
+                a.logo_custom = false;
+                a.extras_tried = false;
+                a.logo.take()
+            }
+            _ => {
+                a.icon_custom = false;
+                a.extras_tried = false;
+                a.icon.take()
+            }
+        };
+        (old, a.clone())
+    };
+    drop_custom_file(st, &old);
     st.save_cache();
     Ok(out)
 }

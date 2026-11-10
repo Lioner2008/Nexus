@@ -3,6 +3,7 @@
 mod art;
 mod genres;
 mod scan;
+mod ts;
 mod vdf;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -12,7 +13,7 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -54,6 +55,15 @@ pub struct Settings {
     pub minimize_on_launch: bool,
     // extra Star Citizen / RSI Launcher library folder
     pub rsi_path: String,
+    // social: chat / calls server, remembered login (token only, never the password)
+    pub social_server: String,
+    pub social_user: String,
+    pub social_token: String,
+    // TeamSpeak 3 ClientQuery: API key + address, stored locally
+    pub ts_api_key: String,
+    pub ts_address: String,
+    // do not start the local Nexus server together with the launcher
+    pub no_local_server: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -65,6 +75,11 @@ pub struct Art {
     pub icon: Option<String>,
     pub cover_tried: bool,
     pub extras_tried: bool,
+    // artwork picked by the user: never replaced by automatic matching
+    pub cover_custom: bool,
+    pub hero_custom: bool,
+    pub logo_custom: bool,
+    pub icon_custom: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -84,6 +99,7 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub enriching: AtomicBool,
     pub io_lock: Mutex<()>,
+    pub ts: tokio::sync::Mutex<Option<ts::TsConn>>,
 }
 
 impl AppState {
@@ -249,8 +265,27 @@ fn clear_art_cache(state: State<'_, AppState>) -> usize {
         .unwrap_or(0);
     let _ = std::fs::remove_dir_all(state.dir.join("art"));
     {
+        // artwork chosen by the user lives in art_custom/ and is kept
         let mut c = state.cache.lock().unwrap();
-        c.art.clear();
+        for a in c.art.values_mut() {
+            if !a.cover_custom {
+                a.cover = None;
+                a.cover_tried = false;
+            }
+            if !a.hero_custom {
+                a.hero = None;
+            }
+            if !a.logo_custom {
+                a.logo = None;
+            }
+            if !a.icon_custom {
+                a.icon = None;
+            }
+            a.extras_tried = false;
+        }
+        c.art.retain(|_, a| {
+            a.cover.is_some() || a.hero.is_some() || a.logo.is_some() || a.icon.is_some()
+        });
         c.sgdb_ids.clear();
     }
     state.save_cache();
@@ -288,6 +323,35 @@ async fn fetch_extras(
     steam_appid: Option<u32>,
 ) -> Result<Art, String> {
     art::ensure_extras(&state, &id, &name, steam_appid).await
+}
+
+/// All SteamGridDB alternatives for one artwork type ("cover", "hero", "logo", "icon").
+#[tauri::command]
+async fn list_art_options(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+    steam_appid: Option<u32>,
+    kind: String,
+) -> Result<Vec<art::ArtOption>, String> {
+    art::list_options(&state, &id, &name, steam_appid, &kind).await
+}
+
+/// Uses an https image URL or a local image file as the artwork for one game.
+#[tauri::command]
+async fn set_art(
+    state: State<'_, AppState>,
+    id: String,
+    kind: String,
+    source: String,
+) -> Result<Art, String> {
+    art::set_custom(&state, &id, &kind, &source).await
+}
+
+/// Removes the user's choice again; automatic matching takes over.
+#[tauri::command]
+fn reset_art(state: State<'_, AppState>, id: String, kind: String) -> Result<Art, String> {
+    art::reset_custom(&state, &id, &kind)
 }
 
 #[tauri::command]
@@ -360,10 +424,188 @@ async fn run_enrich(app: &AppHandle, st: &AppState) {
     st.save_cache();
 }
 
-// ───────────────────────────── entry point ─────────────────────────────
+// ───────────────────────────── local Nexus server ─────────────────────────────
 
+const LOCAL_SERVER: &str = "127.0.0.1:7777";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerStatus {
+    running: bool,
+    address: String,
+    has_binary: bool,
+}
+
+fn server_exe() -> Option<PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    ["nexus-server.exe", "nexus-server"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.exists())
+}
+
+async fn port_open(addr: &str) -> bool {
+    tokio::time::timeout(Duration::from_millis(500), tokio::net::TcpStream::connect(addr))
+        .await
+        .map(|r| r.is_ok())
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn spawn_detached(exe: &Path, data: &Path) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    // CREATE_NO_WINDOW | DETACHED_PROCESS: the server keeps running without a console
+    Command::new(exe)
+        .args(["--bind", LOCAL_SERVER, "--data"])
+        .arg(data)
+        .creation_flags(0x0800_0000 | 0x0000_0008)
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn spawn_detached(exe: &Path, data: &Path) -> std::io::Result<()> {
+    Command::new(exe)
+        .args(["--bind", LOCAL_SERVER, "--data"])
+        .arg(data)
+        .spawn()
+        .map(|_| ())
+}
+
+async fn ensure_local_server(dir: &Path) -> Result<bool, String> {
+    if port_open(LOCAL_SERVER).await {
+        return Ok(true);
+    }
+    let exe = server_exe().ok_or("nexus-server.exe was not found next to Nexus")?;
+    let data = dir.join("server");
+    std::fs::create_dir_all(&data).ok();
+    spawn_detached(&exe, &data).map_err(|e| format!("Could not start the server: {e}"))?;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if port_open(LOCAL_SERVER).await {
+            return Ok(true);
+        }
+    }
+    Err("The server did not start in time".into())
+}
+
+#[tauri::command]
+async fn server_status() -> ServerStatus {
+    ServerStatus { running: port_open(LOCAL_SERVER).await, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() }
+}
+
+#[tauri::command]
+async fn start_local_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
+    let running = ensure_local_server(&state.dir).await?;
+    Ok(ServerStatus { running, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() })
+}
+
+#[tauri::command]
+async fn stop_local_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
+    let _ = state
+        .http
+        .post(format!("http://{LOCAL_SERVER}/api/admin/shutdown"))
+        .send()
+        .await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    Ok(ServerStatus { running: port_open(LOCAL_SERVER).await, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() })
+}
+
+// ───────────────────────────── TeamSpeak 3 (ClientQuery) ─────────────────────────────
+
+/// Runs a call on the active TeamSpeak connection and drops the connection when it is dead.
+macro_rules! ts_call {
+    ($state:expr, $c:ident => $body:expr) => {{
+        let mut g = $state.ts.lock().await;
+        match g.as_ref() {
+            None => Err("Not connected to the TeamSpeak client".to_string()),
+            Some($c) => {
+                let r = $body.await;
+                if let Err(e) = &r {
+                    if e.contains("closed") || e.contains("did not answer") || e.contains("lost") {
+                        *g = None;
+                    }
+                }
+                r
+            }
+        }
+    }};
+}
+
+#[tauri::command]
+async fn ts_connect(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    api_key: String,
+    address: Option<String>,
+) -> Result<(), String> {
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return Err("Enter the ClientQuery API key from TeamSpeak first".into());
+    }
+    let addr = address
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| {
+            let a = state.settings.lock().unwrap().ts_address.clone();
+            if a.is_empty() { ts::DEFAULT_ADDRESS.to_string() } else { a }
+        });
+    {
+        // remember the key on this PC right away (settings.json in the app data folder)
+        let mut s = state.settings.lock().unwrap();
+        s.ts_api_key = key.clone();
+        s.ts_address = addr.clone();
+    }
+    state.save_settings();
+
+    let app2 = app.clone();
+    let emit: ts::Emit = Arc::new(move |name: &str, v: serde_json::Value| {
+        let _ = app2.emit(name, v);
+    });
+    let conn = ts::connect(&addr, &key, emit, Arc::new(|| {})).await?;
+    *state.ts.lock().await = Some(conn);
+    Ok(())
+}
+
+#[tauri::command]
+async fn ts_disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    *state.ts.lock().await = None;
+    Ok(())
+}
+
+#[tauri::command]
+async fn ts_connected(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.ts.lock().await.is_some())
+}
+
+#[tauri::command]
+async fn ts_overview(state: State<'_, AppState>) -> Result<ts::TsOverview, String> {
+    ts_call!(state, c => ts::overview(c))
+}
+
+#[tauri::command]
+async fn ts_join_channel(state: State<'_, AppState>, clid: i64, cid: i64) -> Result<(), String> {
+    ts_call!(state, c => ts::join_channel(c, clid, cid))
+}
+
+#[tauri::command]
+async fn ts_set_mute(
+    state: State<'_, AppState>,
+    input: Option<bool>,
+    output: Option<bool>,
+) -> Result<(), String> {
+    ts_call!(state, c => ts::set_mute(c, input, output))
+}
+
+#[tauri::command]
+async fn ts_send_text(state: State<'_, AppState>, cid: i64, msg: String) -> Result<(), String> {
+    ts_call!(state, c => ts::send_channel_text(c, cid, &msg))
+}
+
+// ───────────────────────────── entry point ─────────────────────────────
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir).ok();
@@ -380,7 +622,18 @@ fn main() {
                 http,
                 enriching: AtomicBool::new(false),
                 io_lock: Mutex::new(()),
+                ts: tokio::sync::Mutex::new(None),
             });
+            // start the local social server in the background unless the user switched that off
+            let auto = !app.state::<AppState>().settings.lock().unwrap().no_local_server;
+            if auto {
+                let dir = app.state::<AppState>().dir.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = ensure_local_server(&dir).await {
+                        eprintln!("local server: {e}");
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -396,6 +649,19 @@ fn main() {
             fetch_cover,
             fetch_extras,
             test_sgdb_key,
+            server_status,
+            start_local_server,
+            stop_local_server,
+            ts_connect,
+            ts_disconnect,
+            ts_connected,
+            ts_overview,
+            ts_join_channel,
+            ts_set_mute,
+            ts_send_text,
+            list_art_options,
+            set_art,
+            reset_art,
             start_enrich,
         ])
         .run(tauri::generate_context!())

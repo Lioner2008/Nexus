@@ -8,16 +8,23 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="social.css">
 </head>
 <body>
 <div class="spot"></div>
 
 <!-- intro -->
 <div id="splash">
-  <div class="splash-ring"></div>
-  <div class="splash-word" id="splash-word"></div>
+  <canvas id="splash-canvas"></canvas>
+  <div class="splash-grid"></div>
+  <div class="splash-center">
+    <div class="splash-mark"><span>N</span><i class="sr sr1"></i><i class="sr sr2"></i><i class="sr sr3"></i></div>
+    <div class="splash-word" id="splash-word"></div>
+    <div class="splash-tag">All your games · One place</div>
+    <div class="splash-bar"><i id="splash-fill"></i></div>
+    <div class="splash-status" id="splash-status">Starting</div>
+  </div>
 </div>
-
 <!-- window chrome -->
 <div class="dragbar" data-tauri-drag-region></div>
 <div class="winctl">
@@ -39,6 +46,9 @@
       <button class="nav-item on" data-view="all"><i class="pl-ico">∞</i><span>All games</span><em id="c-all">0</em></button>
       <button class="nav-item" data-view="fav"><i class="pl-ico" data-icon="heart"></i><span>Favorites</span><em id="c-fav">0</em></button>
       <button class="nav-item" data-view="recent"><i class="pl-ico" data-icon="clock"></i><span>Recently played</span><em id="c-recent">0</em></button>
+
+      <div class="nav-label">Social</div>
+      <button class="nav-item" data-social><i class="pl-ico" data-icon="chat"></i><span>Chat &amp; Voice</span><em class="soc-badge" id="c-social">0</em></button>
 
       <div class="nav-label">Platforms</div>
       <div id="platforms"></div>
@@ -103,6 +113,7 @@
               <button class="btn-primary" id="btn-play"><span class="bp-fill"></span><span class="bp-label"></span></button>
               <button class="btn-icon heart" id="btn-fav" aria-label="Favorite"><svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.2 4.5 6.7 4.5c2 0 3.5 1 5.3 3 1.8-2 3.3-3 5.3-3 3.5 0 5.7 3.500 4.200 7.300C19.500 16.400 12 21 12 21z"/></svg></button>
               <button class="btn-icon" id="btn-folder" aria-label="Open install folder"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+              <button class="btn-icon" id="btn-art" aria-label="Change artwork" title="Change cover, banner, logo and icon"><svg class="ico" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-8 8"/></svg></button>
             </div>
           </div>
           <div class="hero-credit" id="hero-credit"></div>
@@ -147,7 +158,89 @@
         </div>
       </div>
     </section>
-  </main>
+  
+    <!-- SOCIAL -->
+    <section class="view" id="view-social">
+      <div class="soc">
+        <!-- login / register -->
+        <div class="soc-login" id="soc-login">
+          <div class="soc-card">
+            <div class="soc-title">NEXUS SOCIAL</div>
+            <p class="soc-sub">Chat, voice and video calls with your friends. Log in or create an account on your Nexus server.</p>
+            <div class="seg2" id="soc-mode"><button class="on" data-m="login">Log in</button><button data-m="register">Create account</button></div>
+            <label class="field"><span>Username</span><input id="soc-user" type="text" autocomplete="username" spellcheck="false" maxlength="24"></label>
+            <label class="field"><span>Password</span><input id="soc-pass" type="password" autocomplete="current-password" maxlength="200"></label>
+            <details class="soc-adv" id="soc-adv">
+              <summary>Server</summary>
+              <label class="field"><span>Server address</span><input id="soc-server" type="text" spellcheck="false" placeholder="http://127.0.0.1:7777"></label>
+              <div class="soc-srv"><i class="sdot" id="soc-sdot"></i><span id="soc-sstat">Checking…</span><span class="spacer"></span><button class="btn-ghost" id="soc-sstart" hidden>Start</button><button class="btn-ghost" id="soc-sstop" hidden>Stop</button></div>
+            </details>
+            <div class="soc-err" id="soc-err"></div>
+            <button class="btn-primary" id="soc-go"><span class="bp-fill"></span><span class="bp-label">LOG IN</span></button>
+          </div>
+        </div>
+
+        <!-- app -->
+        <div class="soc-app" id="soc-app" hidden>
+          <aside class="soc-side">
+            <div class="soc-me">
+              <div class="av" id="me-av"></div>
+              <div class="grow"><b id="me-name"></b><small id="me-sub">Online</small></div>
+              <button class="icon-btn" id="soc-logout" aria-label="Log out" title="Log out"><svg class="ico" viewBox="0 0 24 24"><path d="M9 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M16 17l5-5-5-5M21 12H9"/></svg></button>
+            </div>
+            <div class="soc-scroll">
+              <div class="soc-sec"><span>Text</span><button id="add-text" aria-label="New text room">+</button></div>
+              <form class="soc-new" id="new-text" hidden><input maxlength="24" placeholder="Room name"><button>Add</button></form>
+              <div id="soc-text"></div>
+              <div class="soc-sec"><span>Voice</span><button id="add-voice" aria-label="New voice room">+</button></div>
+              <form class="soc-new" id="new-voice" hidden><input maxlength="24" placeholder="Room name"><button>Add</button></form>
+              <div id="soc-voice"></div>
+              <div class="soc-sec"><span>Direct messages</span></div>
+              <div id="soc-dms"></div>
+            </div>
+          </aside>
+
+          <section class="soc-main">
+            <div class="soc-call" id="soc-call" hidden>
+              <div class="soc-call-head"><b id="call-title"></b><small id="call-sub"></small></div>
+              <div class="vgrid" id="vgrid"></div>
+              <div class="vbar" id="vbar"></div>
+            </div>
+            <div class="soc-chat">
+              <div class="soc-chat-head"><b id="chat-title">#general</b><small id="chat-topic"></small></div>
+              <div class="msgs" id="msgs"></div>
+              <div class="typing" id="typing"></div>
+              <form class="composer" id="composer">
+                <textarea id="chat-input" rows="1" placeholder="Message" maxlength="4000"></textarea>
+                <button class="btn-primary sm" type="submit"><span class="bp-fill"></span><span class="bp-label">SEND</span></button>
+              </form>
+            </div>
+          </section>
+
+          <aside class="soc-right">
+            <div class="seg2" id="right-tabs"><button class="on" data-tab="people">People</button><button data-tab="ts">TeamSpeak</button></div>
+            <div class="soc-pane" id="pane-people"></div>
+            <div class="soc-pane" id="pane-ts" hidden>
+              <div class="ts-box" id="ts-connect">
+                <p class="soc-sub">Control your TeamSpeak 3 client from Nexus. In TeamSpeak open <b>Tools → Options → Addons → ClientQuery</b>, enable it and copy the API key.</p>
+                <label class="field"><span>ClientQuery API key</span><input id="ts-key" type="password" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XXXX-…"></label>
+                <label class="field"><span>Address</span><input id="ts-addr" type="text" spellcheck="false" placeholder="127.0.0.1:25639"></label>
+                <div class="ts-err" id="ts-err"></div>
+                <button class="btn-primary sm" id="ts-go"><span class="bp-fill"></span><span class="bp-label">CONNECT</span></button>
+                <small class="hint">The key is saved on this PC only (Nexus settings file).</small>
+              </div>
+              <div class="ts-box" id="ts-live" hidden>
+                <div class="ts-head"><b id="ts-server">TeamSpeak</b><button class="btn-ghost" id="ts-off">Disconnect</button></div>
+                <div class="ts-ctrl"><button id="ts-mic"></button><button id="ts-spk"></button></div>
+                <div id="ts-tree"></div>
+                <form class="ts-send" id="ts-form"><input id="ts-msg" type="text" placeholder="Message to your TeamSpeak channel" autocomplete="off"></form>
+                <div class="ts-log" id="ts-log"></div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>  </main>
 </div>
 
 <!-- settings -->
@@ -163,7 +256,7 @@
     <div class="setrow">
       <div><b>Background</b><small>Tone of the dark surfaces</small></div>
       <div class="seg2" id="bg-tone">
-        <button data-v="black">Black</button><button data-v="slate">Slate</button><button data-v="midnight">Midnight</button>
+        <button data-v="black">Black</button><button data-v="slate">Slate</button><button data-v="midnight">Midnight</button><button data-v="clear">Clear</button>
       </div>
     </div>
     <div class="setrow">
@@ -179,6 +272,10 @@
     <div class="setrow">
       <div><b>Minimize when a game starts</b><small>Gets Nexus out of the way while you play</small></div>
       <label class="switch"><input type="checkbox" id="set-minimize"><i></i></label>
+    </div>
+    <div class="setrow">
+      <div><b>Start the Nexus server with the launcher</b><small>Local chat &amp; call server on this PC (127.0.0.1:7777)</small></div>
+      <label class="switch"><input type="checkbox" id="set-local-server"><i></i></label>
     </div>
     <label class="field" style="margin-top:12px">
       <span>Star Citizen / RSI Launcher folder <em style="font-style:normal;color:var(--dim);font-weight:400">optional</em></span>
@@ -211,7 +308,30 @@
     </div>
   </div>
 </div>
+<!-- artwork picker -->
+<div class="modal" id="art-modal" aria-hidden="true">
+  <div class="modal-card wide">
+    <div class="modal-head">
+      <h3 id="art-title">ARTWORK</h3>
+      <button class="icon-btn" id="art-close" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="art-tabs" id="art-tabs">
+      <i class="ind"></i>
+      <button class="on" data-k="cover">Cover</button><button data-k="hero">Banner</button><button data-k="logo">Logo</button><button data-k="icon">Icon</button>
+    </div>
+    <div class="art-tools">
+      <button class="btn-ghost sm" id="art-file">Choose file…</button>
+      <input id="art-url" type="text" placeholder="…or paste an https:// image link" autocomplete="off" spellcheck="false">
+      <button class="btn-ghost sm" id="art-url-go">Use link</button>
+      <button class="btn-ghost sm" id="art-reset">Reset to automatic</button>
+    </div>
+    <div class="art-msg" id="art-msg"></div>
+    <div class="art-grid" id="art-grid"></div>
+  </div>
+</div>
+<div id="soc-rings"></div>
 <div id="toasts"></div>
+<script src="social.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

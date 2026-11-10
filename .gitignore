@@ -3,3 +3,5 @@ src-tauri/gen/
 *.exe
 node_modules/
 .DS_Store
+nexus-data/
+server/nexus-data/

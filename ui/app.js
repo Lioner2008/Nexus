@@ -29,11 +29,15 @@ const THEMES = {
   violet: { name: 'Violet', acc: [167, 139, 250], ink: '#0d0720' },
   rose:   { name: 'Rose',   acc: [255, 77, 125],  ink: '#17020a' },
   mono:   { name: 'Mono',   acc: [236, 239, 243], ink: '#0b0d10' },
+  azure:  { name: 'Azure',  acc: [59, 130, 246],  ink: '#ffffff', hidden: true }, // default accent of the clear theme
 };
+const DARK_TEXT = { text: [238, 242, 246], mut: [135, 147, 160], dim: [96, 107, 118], fg: [255, 255, 255] };
 const TONES = {
-  black:    { bg: [7, 9, 11],   bg2: [11, 15, 19], panel: [16, 21, 26], panel2: [22, 29, 36], line: [30, 38, 46], line2: [43, 54, 64] },
-  slate:    { bg: [15, 17, 21], bg2: [19, 22, 27], panel: [25, 28, 34], panel2: [32, 36, 43], line: [40, 45, 53], line2: [55, 62, 72] },
-  midnight: { bg: [6, 9, 20],   bg2: [10, 14, 28], panel: [15, 20, 38], panel2: [21, 27, 50], line: [30, 38, 66], line2: [44, 54, 90] },
+  black:    { ...DARK_TEXT, bg: [7, 9, 11],   bg2: [11, 15, 19], panel: [16, 21, 26], panel2: [22, 29, 36], line: [30, 38, 46], line2: [43, 54, 64] },
+  slate:    { ...DARK_TEXT, bg: [15, 17, 21], bg2: [19, 22, 27], panel: [25, 28, 34], panel2: [32, 36, 43], line: [40, 45, 53], line2: [55, 62, 72] },
+  midnight: { ...DARK_TEXT, bg: [6, 9, 20],   bg2: [10, 14, 28], panel: [15, 20, 38], panel2: [21, 27, 50], line: [30, 38, 66], line2: [44, 54, 90] },
+  clear:    { light: true, text: [17, 24, 32], mut: [84, 96, 110], dim: [118, 130, 144], fg: [17, 24, 32],
+              bg: [243, 246, 250], bg2: [234, 238, 244], panel: [255, 255, 255], panel2: [240, 243, 248], line: [220, 226, 234], line2: [196, 204, 215] },
 };
 const toHex = (c) => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
 function hexToRgb(h) {
@@ -49,19 +53,24 @@ function applyTheme(s) {
   const acc = custom || t.acc;
   const ink = custom ? (0.299 * acc[0] + 0.587 * acc[1] + 0.114 * acc[2] > 150 ? '#0a0d10' : '#ffffff') : t.ink;
   const tone = TONES[s.bgTone] || TONES.black;
-  root.style.setProperty('--acc-rgb', acc.join(' '));
-  root.style.setProperty('--acc-ink', ink);
-  root.style.setProperty('--bg-rgb', tone.bg.join(' '));
-  for (const k of ['bg', 'bg2', 'panel', 'panel2', 'line', 'line2']) root.style.setProperty(`--${k}`, toHex(tone[k]));
+  const set = (k, v) => root.style.setProperty(k, v);
+  set('--acc-rgb', acc.join(' '));
+  set('--acc-ink', ink);
+  // on the clear theme accent colored text needs to be darker to stay readable
+  set('--acc-t', tone.light ? `rgb(${acc.map((v) => Math.round(v * 0.55)).join(' ')})` : 'var(--acc)');
+  set('--bg-rgb', tone.bg.join(' '));
+  for (const k of ['bg', 'bg2', 'panel', 'panel2', 'line', 'line2', 'text', 'mut', 'dim']) set(`--${k}`, toHex(tone[k]));
+  set('--fg-rgb', tone.fg.join(' '));
+  root.classList.toggle('light', !!tone.light);
   root.classList.toggle('no-motion', !!s.noMotion);
-}
-// apply the last used theme immediately, before the backend has answered
+}// apply the last used theme immediately, before the backend has answered
 try { applyTheme(JSON.parse(store.get('themeCache', '{}'))); } catch { /* defaults */ }
 
 const IC = {
   play: '<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>',
   download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>',
   heart: '<svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.2 4.5 6.7 4.5c2 0 3.5 1 5.3 3 1.8-2 3.3-3 5.3-3 3.5 0 5.7 3.5 4.2 7.3C19.5 16.4 12 21 12 21z"/></svg>',
+  chat: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
   clock: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
   check: '<svg class="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
 };
@@ -81,6 +90,7 @@ const S = {
     sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {},
     theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
     skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
+    socialServer: '', socialUser: '', socialToken: '', tsApiKey: '', tsAddress: '', noLocalServer: false,
   },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
   selected: null, scanning: false,
@@ -379,7 +389,7 @@ function renderHero() {
   const p = PLATFORMS[g.platform] || { name: g.platform, color: '#fff' };
   const status = $('#hero-status');
   status.className = `hero-status ${g.installed ? '' : 'missing'}`;
-  status.innerHTML = `<i class="dot"></i>${g.installed ? 'Installed' : 'Not installed'}`;
+  status.innerHTML = (a.icon ? `<img class="hero-icon" src="${esc(api.src(a.icon))}" alt="">` : '') + `<i class="dot"></i>${g.installed ? 'Installed' : 'Not installed'}`;
   $('#hero-title').textContent = g.name;
   $('#hero-title').hidden = !!a.logo;
   const logo = $('#hero-logo');
@@ -566,6 +576,9 @@ function updateArtRow() {
 function showView(name) {
   $('#view-library').classList.toggle('on', name === 'library');
   $('#view-scan').classList.toggle('on', name === 'scan');
+  $('#view-social').classList.toggle('on', name === 'social');
+  $('#nav').classList.toggle('in-social', name === 'social');
+  if (name === 'social') Social.onShow();
   if (name === 'library') setTimeout(() => { slide($('#seg-install')); slide($('#chips')); }, 80);
 }
 
@@ -662,6 +675,8 @@ $('#zoom').addEventListener('input', (e) => {
 $('#nav').addEventListener('click', (e) => {
   const b = e.target.closest('.nav-item');
   if (!b) return;
+  if (b.hasAttribute('data-social')) { showView('social'); return; }
+  showView('library');
   if (b.dataset.platform) {
     S.platform = S.platform === b.dataset.platform ? null : b.dataset.platform;
   } else {
@@ -712,8 +727,9 @@ function renderThemeGrid() {
   const cur = draft.theme || 'neon';
   const accent = draft.accent || '#c8ff2e';
   $('#theme-grid').innerHTML =
-    Object.entries(THEMES).map(([id, t]) =>
+    Object.entries(THEMES).filter(([, t]) => !t.hidden).map(([id, t]) =>
       `<button class="theme ${cur === id ? 'on' : ''}" data-theme="${id}" style="--sw:${toHex(t.acc)}"><i></i>${t.name}</button>`).join('') +
+    `<button class="theme clear ${draft.bgTone === 'clear' ? 'on' : ''}" data-preset="clear"><i></i>Clear</button>` +
     `<label class="theme custom ${cur === 'custom' ? 'on' : ''}" style="--sw:${accent}"><i></i>Custom<input type="color" value="${accent}" aria-label="Custom accent color"></label>`;
 }
 
@@ -729,6 +745,7 @@ function openSettings() {
   $('#set-motion').checked = !S.settings.noMotion;
   $('#set-startup-scan').checked = !S.settings.skipStartupScan;
   $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
+  $('#set-local-server').checked = !S.settings.noLocalServer;
   renderThemeGrid();
   syncBgTone();
   const m = $('#set-sgdb-msg');
@@ -748,6 +765,16 @@ settingsEl.addEventListener('mousedown', (e) => { if (e.target === settingsEl) c
 
 // live preview while the dialog is open
 $('#theme-grid').addEventListener('click', (e) => {
+  const preset = e.target.closest('button[data-preset]');
+  if (preset) {
+    // "Clear" = light surfaces with a blue accent (unless the user already picked a color)
+    draft.bgTone = 'clear';
+    if (!draft.theme || draft.theme === 'neon' || draft.theme === 'mono') draft.theme = 'azure';
+    applyTheme(draft);
+    renderThemeGrid();
+    syncBgTone();
+    return;
+  }
   const b = e.target.closest('button[data-theme]');
   if (!b) return;
   draft.theme = b.dataset.theme;
@@ -768,6 +795,7 @@ $('#bg-tone').addEventListener('click', (e) => {
   draft.bgTone = b.dataset.v;
   applyTheme(draft);
   syncBgTone();
+  renderThemeGrid();
 });
 $('#set-motion').addEventListener('change', (e) => { draft.noMotion = !e.target.checked; applyTheme(draft); });
 $('#set-startup-scan').addEventListener('change', (e) => { draft.skipStartupScan = !e.target.checked; });
@@ -803,6 +831,7 @@ $('#set-save').addEventListener('click', async () => {
   next.sgdbKey = $('#set-sgdb').value.trim();
   next.steamKey = $('#set-steam').value.trim();
   next.rsiPath = $('#set-rsi').value.trim();
+  next.noLocalServer = !$('#set-local-server').checked;
   S.settings = next;
   store.set('themeCache', JSON.stringify({ theme: next.theme, accent: next.accent, bgTone: next.bgTone, noMotion: next.noMotion }));
   applyTheme(next);
@@ -816,6 +845,154 @@ $('#set-save').addEventListener('click', async () => {
     ensureExtras(S.selected);
     updateArtRow();
   }
+});
+/* ───────────────────────── artwork picker (per game) ───────────────────────── */
+
+const artUI = { game: null, kind: 'cover', cache: new Map(), busy: false };
+const ART_NAMES = { cover: 'Cover', hero: 'Banner', logo: 'Logo', icon: 'Icon' };
+
+function openArt(id) {
+  const g = S.byId.get(id);
+  if (!g) return;
+  artUI.game = g;
+  artUI.kind = 'cover';
+  $('#art-title').textContent = `ARTWORK · ${g.name.toUpperCase()}`;
+  $('#art-url').value = '';
+  $$('#art-tabs button').forEach((b) => b.classList.toggle('on', b.dataset.k === 'cover'));
+  $('#art-modal').classList.add('on');
+  $('#art-modal').setAttribute('aria-hidden', 'false');
+  setTimeout(() => slide($('#art-tabs')), 60);
+  loadArtOptions();
+}
+function closeArt() {
+  $('#art-modal').classList.remove('on');
+  $('#art-modal').setAttribute('aria-hidden', 'true');
+}
+
+function artCurrent() {
+  const a = S.art[artUI.game?.id] || {};
+  return { path: a[artUI.kind], custom: !!a[`${artUI.kind}Custom`] };
+}
+
+async function loadArtOptions() {
+  const g = artUI.game;
+  const k = artUI.kind;
+  const grid = $('#art-grid');
+  const msg = $('#art-msg');
+  grid.dataset.k = k;
+  msg.className = 'art-msg';
+  msg.textContent = '';
+  const cur = artCurrent();
+  $('#art-reset').disabled = !cur.custom;
+  grid.innerHTML = Array.from({ length: k === 'icon' ? 16 : 8 }, () => '<div class="art-skel"></div>').join('');
+  try {
+    const key = `${g.id}|${k}`;
+    let opts = artUI.cache.get(key);
+    if (!opts) {
+      opts = await api.invoke('list_art_options', { id: g.id, name: g.name, steamAppid: g.steamAppid ?? null, kind: k });
+      artUI.cache.set(key, opts);
+    }
+    if (artUI.game !== g || artUI.kind !== k) return; // user switched tab meanwhile
+    const current = cur.path
+      ? `<button class="art-opt cur" data-keep="1" title="Current ${ART_NAMES[k].toLowerCase()}${cur.custom ? ' (your choice)' : ''}"><img src="${esc(api.src(cur.path))}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>`
+      : '';
+    grid.innerHTML = current + opts.map((o, i) =>
+      `<button class="art-opt" style="--i:${Math.min(i, 20)}" data-url="${esc(o.url)}" title="${esc([o.style, o.author && `by ${o.author}`].filter(Boolean).join(' · '))}"><img src="${esc(o.thumb)}" loading="lazy" alt=""><span>${o.width}×${o.height}</span></button>`).join('');
+    if (!opts.length) {
+      msg.textContent = 'Nothing found on SteamGridDB for this game. Use a file or an image link instead.';
+    }
+  } catch (e) {
+    grid.innerHTML = current_(cur);
+    msg.className = 'art-msg err';
+    msg.textContent = String(e);
+  }
+}
+// shows only the current image when SteamGridDB can't be reached
+function current_(cur) {
+  return cur.path ? `<button class="art-opt cur" data-keep="1"><img src="${esc(api.src(cur.path))}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>` : '';
+}
+
+async function applyArt(source, btn) {
+  if (artUI.busy) return;
+  const g = artUI.game;
+  const k = artUI.kind;
+  artUI.busy = true;
+  btn?.classList.add('busy');
+  try {
+    const art = await api.invoke('set_art', { id: g.id, kind: k, source });
+    afterArtChange(g.id, art, k);
+    toast(`${ART_NAMES[k]} updated for ${g.name}`);
+    loadArtOptions();
+  } catch (e) {
+    toast(String(e), 'err');
+  } finally {
+    artUI.busy = false;
+    btn?.classList.remove('busy');
+  }
+}
+
+function afterArtChange(id, art, kind) {
+  S.art[id] = { ...(S.art[id] || {}), ...art };
+  if (kind === 'cover') {
+    $('.cover', cardEls.get(id) || document.createElement('i'))?.remove();
+    applyCover(id);
+  }
+  if (S.selected === id) renderHero();
+  updateArtRow();
+}
+
+$('#btn-art').addEventListener('click', () => S.selected && openArt(S.selected));
+$('#art-close').addEventListener('click', closeArt);
+$('#art-modal').addEventListener('mousedown', (e) => { if (e.target.id === 'art-modal') closeArt(); });
+$('#art-tabs').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  artUI.kind = b.dataset.k;
+  $$('#art-tabs button').forEach((x) => x.classList.toggle('on', x === b));
+  slide($('#art-tabs'));
+  loadArtOptions();
+});
+$('#art-grid').addEventListener('click', (e) => {
+  const b = e.target.closest('.art-opt');
+  if (b?.dataset.url) applyArt(b.dataset.url, b);
+});
+$('#art-url-go').addEventListener('click', () => {
+  const v = $('#art-url').value.trim();
+  if (v) applyArt(v);
+});
+$('#art-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('#art-url-go').click(); });
+$('#art-file').addEventListener('click', async () => {
+  try {
+    const dlg = window.__TAURI__?.dialog;
+    if (!dlg) { toast('File chooser is only available in the desktop app', 'err'); return; }
+    const picked = await dlg.open({ multiple: false, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }] });
+    const path = Array.isArray(picked) ? picked[0] : picked;
+    if (path) applyArt(path);
+  } catch (e) { toast(String(e), 'err'); }
+});
+$('#art-reset').addEventListener('click', async () => {
+  const g = artUI.game;
+  const k = artUI.kind;
+  try {
+    const art = await api.invoke('reset_art', { id: g.id, kind: k });
+    afterArtChange(g.id, art, k);
+    if (k === 'cover') enqueueArt(g.id, true); else ensureExtras(g.id);
+    toast(`${ART_NAMES[k]} reset to automatic`);
+    loadArtOptions();
+  } catch (e) { toast(String(e), 'err'); }
+});
+
+// right click on a card opens the picker for that game
+grid.addEventListener('contextmenu', (e) => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  e.preventDefault();
+  selectGame(card.dataset.id);
+  openArt(card.dataset.id);
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && $('#art-modal').classList.contains('on')) closeArt();
 });
 /* ───────────────────────── toasts ───────────────────────── */
 
@@ -835,6 +1012,69 @@ function buildSplash() {
   $('#splash-word').innerHTML = [...'NEXUS'].map((c, i) => `<span style="--i:${i}">${c}</span>`).join('');
 }
 
+/** Intro: a network of nodes that drifts in and locks into a ring around the logo. Returns a stop function. */
+function startSplashCanvas(speed) {
+  const cv = $('#splash-canvas');
+  const ctx = cv.getContext('2d');
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  let w = 0;
+  let h = 0;
+  const resize = () => {
+    w = window.innerWidth; h = window.innerHeight;
+    cv.width = w * dpr; cv.height = h * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  };
+  resize();
+  window.addEventListener('resize', resize);
+  const rgb = getComputedStyle(document.documentElement).getPropertyValue('--acc-rgb').trim().split(/\s+/).join(',');
+  const scale = () => Math.min(w, h) / 800 + 0.4;
+  const N = 72;
+  const nodes = Array.from({ length: N }, (_, i) => {
+    const a = (i / N) * Math.PI * 2 + Math.random() * 0.6;
+    const far = Math.max(w, h) * (0.55 + Math.random() * 0.45);
+    return {
+      sx: w / 2 + Math.cos(a) * far, sy: h / 2 + Math.sin(a) * far, a,
+      ring: 70 + (i % 3) * 78 + Math.random() * 34, ph: Math.random() * 6.28, sp: 0.4 + Math.random() * 0.6,
+    };
+  });
+  const T = 1.6 * speed;
+  const t0 = performance.now();
+  let raf = 0;
+  let alive = true;
+  const frame = (now) => {
+    if (!alive) return;
+    const t = (now - t0) / 1000;
+    const k = Math.min(1, t / T);
+    const e = 1 - Math.pow(1 - k, 3);
+    ctx.clearRect(0, 0, w, h);
+    const sc = scale();
+    const pts = nodes.map((n) => {
+      const ang = n.a + t * 0.18 * n.sp;
+      const r = n.ring * sc * (1 + 0.06 * Math.sin(t * 1.3 + n.ph));
+      const tx = w / 2 + Math.cos(ang) * r;
+      const ty = h / 2 + Math.sin(ang) * r * 0.78;
+      return { x: n.sx + (tx - n.sx) * e, y: n.sy + (ty - n.sy) * e };
+    });
+    const maxd = 150 * sc;
+    ctx.lineWidth = 1;
+    for (let i = 0; i < N; i++) {
+      for (let j = i + 1; j < N; j++) {
+        const dx = pts[i].x - pts[j].x;
+        const dy = pts[i].y - pts[j].y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 < maxd * maxd) {
+          ctx.strokeStyle = `rgba(${rgb},${(1 - Math.sqrt(d2) / maxd) * 0.55 * e})`;
+          ctx.beginPath(); ctx.moveTo(pts[i].x, pts[i].y); ctx.lineTo(pts[j].x, pts[j].y); ctx.stroke();
+        }
+      }
+    }
+    ctx.fillStyle = `rgba(${rgb},${0.45 + 0.55 * e})`;
+    for (const p of pts) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.1, 0, 6.283); ctx.fill(); }
+    raf = requestAnimationFrame(frame);
+  };
+  raf = requestAnimationFrame(frame);
+  return () => { alive = false; cancelAnimationFrame(raf); window.removeEventListener('resize', resize); };
+}
 function restorePrefs() {
   S.sort = store.get('sort', 'recent');
   S.install = store.get('install', 'all');
@@ -847,12 +1087,25 @@ function restorePrefs() {
 }
 
 async function boot() {
+  const splash = $('#splash');
+  const returning = store.get('introSeen', '') === '1';
+  const reduced = document.documentElement.classList.contains('no-motion') || matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const speed = returning ? 0.55 : 1;
+  const minTime = reduced ? 350 : returning ? 1900 : 3400;
+  splash.style.setProperty('--s', speed);
+  const progress = (pct, label) => {
+    $('#splash-fill').style.setProperty('--p', `${pct}%`);
+    if (label) $('#splash-status').textContent = label;
+  };
   buildSplash();
+  const stopCanvas = reduced ? () => {} : startSplashCanvas(speed);
   const t0 = performance.now();
+  progress(12, 'Starting');
   restorePrefs();
   await api.listen('scan-progress', (e) => { scanChain = scanChain.then(() => onProgress(e.payload)); });
   await api.listen('genres-updated', (e) => onGenres(e.payload));
 
+  progress(34, 'Loading library');
   const b = await api.invoke('bootstrap');
   S.settings = { ...S.settings, ...b.settings };
   if (!S.settings.theme) S.settings.theme = 'neon';
@@ -862,14 +1115,25 @@ async function boot() {
   S.art = b.art || {};
   S.genres = b.genres || {};
   setGames(b.library || []);
+  progress(66, 'Preparing games');
+  Social.init();
   refresh(true);
   renderHero();
 
   const hasLibrary = S.games.length > 0;
   if (!hasLibrary) { buildScanRows(); updateArtRow(); showView('scan'); }
+  $$('.nav-item').forEach((el, i) => el.style.setProperty('--n', i));
 
-  await sleep(Math.max(0, 1500 - (performance.now() - t0)));
-  $('#splash').classList.add('out');
+  await sleep(Math.max(0, minTime * 0.7 - (performance.now() - t0)));
+  progress(100, 'Ready');
+  await sleep(Math.max(0, minTime - (performance.now() - t0)));
+
+  // reveal: the intro zooms away while the interface builds up behind it
+  document.body.classList.add('entered');
+  if (hasLibrary) renderGrid(false);
+  splash.classList.add('out');
+  setTimeout(stopCanvas, 1000);
+  store.set('introSeen', '1');
   slide($('#seg-install'));
   slide($('#chips'));
   if (hasLibrary && S.settings.skipStartupScan) {
@@ -878,10 +1142,9 @@ async function boot() {
   } else runScan(!hasLibrary);
 
   if (!S.settings.sgdbKey) {
-    setTimeout(() => toast('Add a free SteamGridDB key to load cover art', '', { label: 'Open settings', fn: openSettings }), 2600);
+    setTimeout(() => toast('Add a free SteamGridDB key to load cover art', '', { label: 'Open settings', fn: openSettings }), 3200);
   }
 }
-
 boot().catch((e) => { console.error(e); toast(`Startup error: ${e}`, 'err'); $('#splash').classList.add('out'); });
 
 /* ───────────────────────── browser mock (UI preview without Rust) ───────────────────────── */
@@ -929,6 +1192,10 @@ function makeMock() {
         case 'fetch_extras': return {};
         case 'test_sgdb_key': return 'Key works (mock)';
         case 'clear_art_cache': return 0;
+        case 'server_status': return { running: true, address: '127.0.0.1:7777', hasBinary: true };
+        case 'list_art_options': return [];
+        case 'set_art': return {};
+        case 'reset_art': return {};
         case 'open_data_folder': return null;
         default: return null;
       }
