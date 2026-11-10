@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Nexus</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="spot"></div>
+
+<!-- intro -->
+<div id="splash">
+  <div class="splash-ring"></div>
+  <div class="splash-word" id="splash-word"></div>
+</div>
+
+<!-- window chrome -->
+<div class="dragbar" data-tauri-drag-region></div>
+<div class="winctl">
+  <button id="w-min" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
+  <button id="w-max" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg></button>
+  <button id="w-close" class="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7"/></svg></button>
+</div>
+
+<div class="app">
+  <!-- ───────── sidebar ───────── -->
+  <aside class="side">
+    <div class="brand">
+      <div class="brand-mark"><span>N</span></div>
+      <div class="brand-name">NEXUS</div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <div class="nav-label">Library</div>
+      <button class="nav-item on" data-view="all"><i class="pl-ico">∞</i><span>All games</span><em id="c-all">0</em></button>
+      <button class="nav-item" data-view="fav"><i class="pl-ico" data-icon="heart"></i><span>Favorites</span><em id="c-fav">0</em></button>
+      <button class="nav-item" data-view="recent"><i class="pl-ico" data-icon="clock"></i><span>Recently played</span><em id="c-recent">0</em></button>
+
+      <div class="nav-label">Platforms</div>
+      <div id="platforms"></div>
+    </nav>
+
+    <div class="side-foot">
+      <button class="scan-btn" id="btn-rescan">
+        <svg class="ico" id="ico-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>
+        <span><b>Scan again</b><small id="foot-stat">—</small></span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- ───────── stage ───────── -->
+  <main class="stage">
+
+    <!-- LIBRARY -->
+    <section class="view on" id="view-library">
+      <div class="topbar">
+        <label class="search">
+          <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <input id="q" type="text" placeholder="Search your games" autocomplete="off" spellcheck="false">
+          <kbd>Ctrl K</kbd>
+        </label>
+
+        <div class="seg" id="seg-install">
+          <i class="ind"></i>
+          <button class="on" data-v="all">All</button>
+          <button data-v="installed">Installed</button>
+          <button data-v="missing">Not installed</button>
+        </div>
+
+        <div class="spacer"></div>
+
+        <label class="sort">
+          <span>Sort</span>
+          <select id="sort">
+            <option value="recent">Last played</option>
+            <option value="az">A – Z</option>
+            <option value="played">Most played</option>
+            <option value="platform">Platform</option>
+          </select>
+        </label>
+        <label class="zoom" title="Cover size">
+          <svg class="ico" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <input id="zoom" type="range" min="130" max="260" value="176">
+        </label>
+        <button class="icon-btn" id="btn-settings" aria-label="Settings"><svg class="ico" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      </div>
+
+      <div class="scroller" id="scroller">
+        <!-- hero -->
+        <div class="hero" id="hero">
+          <div class="hero-bg" id="hero-bg"></div>
+          <div class="hero-shade"></div>
+          <div class="hero-body" id="hero-body">
+            <div class="hero-status" id="hero-status"></div>
+            <h1 class="hero-title" id="hero-title"></h1>
+            <img class="hero-logo" id="hero-logo" alt="" hidden>
+            <div class="hero-meta" id="hero-meta"></div>
+            <div class="hero-actions">
+              <button class="btn-primary" id="btn-play"><span class="bp-fill"></span><span class="bp-label"></span></button>
+              <button class="btn-icon heart" id="btn-fav" aria-label="Favorite"><svg viewBox="0 0 24 24"><path d="M12 21s-7.5-4.6-9.5-9.2C1 8 3.2 4.5 6.7 4.5c2 0 3.5 1 5.3 3 1.8-2 3.3-3 5.3-3 3.5 0 5.7 3.500 4.200 7.300C19.500 16.400 12 21 12 21z"/></svg></button>
+              <button class="btn-icon" id="btn-folder" aria-label="Open install folder"><svg class="ico" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+            </div>
+          </div>
+          <div class="hero-credit" id="hero-credit"></div>
+        </div>
+
+        <!-- genre chips -->
+        <nav class="chips" id="chips"><i class="ind"></i></nav>
+
+        <!-- grid -->
+        <div class="grid" id="grid"></div>
+        <div class="empty" id="empty" hidden>
+          <svg class="ico" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+          <b>No games found</b>
+          <span>Try another filter or scan again.</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- SCAN -->
+    <section class="view" id="view-scan">
+      <div class="scan">
+        <button class="back" id="btn-back"><svg class="ico" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>Library</button>
+
+        <div class="scan-head">
+          <div class="radar" id="radar">
+            <i class="r r1"></i><i class="r r2"></i><i class="r r3"></i>
+            <i class="sweep"></i>
+            <i class="cross-h"></i><i class="cross-v"></i>
+            <i class="blip b1"></i><i class="blip b2"></i><i class="blip b3"></i>
+          </div>
+          <div>
+            <h2 class="scan-title">FINDING<br>YOUR GAMES</h2>
+            <p class="scan-sub" id="scan-sub">Nexus reads each launcher's install records, so nothing has to be added by hand. Covers are then matched from SteamGridDB.</p>
+          </div>
+        </div>
+
+        <div class="rows" id="scan-rows"></div>
+
+        <div class="scan-actions">
+          <button class="btn-primary" id="btn-open" disabled><span class="bp-fill"></span><span class="bp-label">OPEN LIBRARY</span></button>
+          <button class="btn-ghost" id="btn-scan2">Scan again</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<!-- settings -->
+<div class="modal" id="settings" aria-hidden="true">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h3>SETTINGS</h3>
+      <button class="icon-btn" id="set-close" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+
+    <label class="field">
+      <span>SteamGridDB API key <a href="https://www.steamgriddb.com/profile/preferences/api" data-ext>get a key</a></span>
+      <input id="set-sgdb" type="password" placeholder="Covers, heroes, logos and icons" autocomplete="off" spellcheck="false">
+      <small id="set-sgdb-msg">Free – log in on steamgriddb.com, open Preferences → API.</small>
+    </label>
+
+    <label class="field">
+      <span>Steam Web API key <a href="https://steamcommunity.com/dev/apikey" data-ext>get a key</a></span>
+      <input id="set-steam" type="password" placeholder="Optional – shows your not-installed Steam games" autocomplete="off" spellcheck="false">
+      <small>Needs "Game details" set to public in your Steam privacy settings.</small>
+    </label>
+
+    <div class="modal-foot">
+      <button class="btn-ghost" id="set-test">Test SteamGridDB key</button>
+      <div class="spacer"></div>
+      <button class="btn-primary sm" id="set-save"><span class="bp-fill"></span><span class="bp-label">SAVE</span></button>
+    </div>
+  </div>
+</div>
+
+<div id="toasts"></div>
+<script src="app.js"></script>
+</body>
+</html>
