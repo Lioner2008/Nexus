@@ -34,6 +34,32 @@ cargo build --release
 node tests/e2e.mjs http://127.0.0.1:7777     # smoke test against a running server (use a throw-away data dir)
 ```
 
+### Devices
+
+*Settings → Audio & video devices*: choose the microphone, headphones / speakers and camera, test them (level meter, camera preview,
+test sound). Changes also apply to a running call.
+
+### Playing with friends in other networks
+
+By default the server only listens on this PC. **Settings → Play with friends over the internet** (Internet mode) restarts it with
+
+```bash
+nexus-server --bind 0.0.0.0:7777 --turn --upnp --invite <code>
+```
+
+- `--upnp` asks the router to forward TCP 7777 and the relay ports automatically (if the router has no UPnP, forward **TCP 7777** and **UDP 3478 + 49160-49200** yourself)
+- `--turn` starts a built-in **TURN relay**; clients that reach the server over a non-local address get time-limited relay credentials,
+  so calls work even when both players are behind strict NATs (voice and video stay peer-to-peer whenever possible)
+- `--invite` makes creating an account require a code; the launcher generates one and shows it together with the address to give to friends
+
+Friends enter `http://<your public IP>:7777` under *Chat & Voice → Server* and the invite code when creating their account.
+Windows asks once to allow `nexus-server.exe` through the firewall. Not possible behind carrier-grade NAT (use a VPN such as Tailscale then).
+**The connection is not encrypted** (HTTP/WebSocket): use a password you use nowhere else, or run everything over a VPN.
+
+```bash
+node server/tests/internet.mjs <nexus-server.exe> <lan-ip>   # invite code, STUN, TURN allocation
+```
+
 ### TeamSpeak 3
 
 The *TeamSpeak* tab talks to your running TeamSpeak 3 client through its **ClientQuery** interface

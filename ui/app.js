@@ -90,6 +90,7 @@ const S = {
     sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {},
     theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
     skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
+    micId: '', speakerId: '', camId: '', internetMode: false, inviteCode: '',
     socialServer: '', socialUser: '', socialToken: '', tsApiKey: '', tsAddress: '', noLocalServer: false,
   },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
@@ -746,6 +747,8 @@ function openSettings() {
   $('#set-startup-scan').checked = !S.settings.skipStartupScan;
   $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
   $('#set-local-server').checked = !S.settings.noLocalServer;
+  Social.fillDevices();
+  Social.netRefresh();
   renderThemeGrid();
   syncBgTone();
   const m = $('#set-sgdb-msg');
@@ -755,6 +758,7 @@ function openSettings() {
   settingsEl.setAttribute('aria-hidden', 'false');
 }
 function closeSettings() {
+  Social.stopDeviceTest();
   applyTheme(S.settings); // drop an unsaved theme preview
   settingsEl.classList.remove('on');
   settingsEl.setAttribute('aria-hidden', 'true');
@@ -832,12 +836,16 @@ $('#set-save').addEventListener('click', async () => {
   next.steamKey = $('#set-steam').value.trim();
   next.rsiPath = $('#set-rsi').value.trim();
   next.noLocalServer = !$('#set-local-server').checked;
+  next.micId = $('#dev-mic').value;
+  next.speakerId = $('#dev-spk').value;
+  next.camId = $('#dev-cam').value;
   S.settings = next;
   store.set('themeCache', JSON.stringify({ theme: next.theme, accent: next.accent, bgTone: next.bgTone, noMotion: next.noMotion }));
   applyTheme(next);
   await api.invoke('save_settings', { settings: next });
   closeSettings();
   toast('Settings saved');
+  Social.applyDevices();
   if (next.steamKey !== old.steamKey || next.rsiPath !== old.rsiPath) { runScan(true); return; }
   if (next.sgdbKey !== old.sgdbKey) {
     artDead = false;
@@ -1192,7 +1200,7 @@ function makeMock() {
         case 'fetch_extras': return {};
         case 'test_sgdb_key': return 'Key works (mock)';
         case 'clear_art_cache': return 0;
-        case 'server_status': return { running: true, address: '127.0.0.1:7777', hasBinary: true };
+        case 'server_status': return { running: true, address: '127.0.0.1:7777', hasBinary: true, internet: false };
         case 'list_art_options': return [];
         case 'set_art': return {};
         case 'reset_art': return {};

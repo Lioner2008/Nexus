@@ -96,11 +96,23 @@ pub struct State {
     dirty: bool,
 }
 
+/// Options chosen at startup.
+#[derive(Default, Clone)]
+pub struct Config {
+    /// When set, creating an account requires this code.
+    pub invite: Option<String>,
+    /// (shared secret, UDP port) of the built-in TURN relay, when it is running.
+    pub turn: Option<(String, u16)>,
+}
+
 pub struct Hub {
     pub st: Mutex<State>,
     pub data: PathBuf,
     pub shutdown: Notify,
     pub started: Instant,
+    pub cfg: Config,
+    /// Network status shown to the launcher (public address, UPnP, TURN).
+    pub info: Mutex<Value>,
 }
 
 fn key(name: &str) -> String {
@@ -137,7 +149,7 @@ fn dm_parts(id: &str) -> Option<(String, String)> {
 }
 
 impl Hub {
-    pub fn load(data: PathBuf) -> Hub {
+    pub fn load(data: PathBuf, cfg: Config) -> Hub {
         let _ = std::fs::create_dir_all(&data);
         let p: Persisted = std::fs::read(data.join("state.json"))
             .ok()
@@ -175,6 +187,8 @@ impl Hub {
             data,
             shutdown: Notify::new(),
             started: Instant::now(),
+            cfg,
+            info: Mutex::new(json!({})),
         }
     }
 
@@ -206,7 +220,12 @@ impl Hub {
 
     // ───────────── accounts ─────────────
 
-    pub async fn register(&self, name: String, password: String) -> Result<(String, String), (u16, String)> {
+    pub async fn register(&self, name: String, password: String, invite: Option<String>) -> Result<(String, String), (u16, String)> {
+        if let Some(code) = &self.cfg.invite {
+            if invite.as_deref().map(str::trim) != Some(code.as_str()) {
+                return Err((403, "A valid invite code is required to create an account".into()));
+            }
+        }
         let name = name.trim().to_string();
         if !valid_name(&name) {
             return Err((400, "Username: 3–24 characters, letters, digits, _ or -".into()));
@@ -298,20 +317,20 @@ impl Hub {
         let online: HashSet<String> = st.conns.values().map(|c| key(&c.user)).collect();
         json!({
             "ok": true, "name": "Nexus Server", "version": env!("CARGO_PKG_VERSION"),
-            "users": st.users.len(), "online": online.len(),
+            "users": st.users.len(), "online": online.len(), "invite": self.cfg.invite.is_some(),
             "connections": st.conns.len(), "uptime": self.started.elapsed().as_secs(),
         })
     }
 
     // ───────────── connections ─────────────
 
-    pub fn register_conn(&self, user: &str, tx: UnboundedSender<String>) -> u64 {
+    pub fn register_conn(&self, user: &str, tx: UnboundedSender<String>, host: Option<&str>) -> u64 {
         let mut st = self.st.lock().unwrap();
         let id = st.next_conn;
         st.next_conn += 1;
         st.conns.insert(id, Conn { user: user.to_string(), status: "online".into(), tx, voice: None });
 
-        let ice = ice_servers();
+        let ice = self.ice_servers(host);
         st.send(id, &json!({
             "t": "welcome", "you": user, "conn": id, "ice": ice,
             "rooms": st.rooms_json(), "dms": st.dms_json(user),
@@ -557,18 +576,34 @@ impl Hub {
     }
 }
 
-fn ice_servers() -> Value {
-    let mut v = vec![json!({ "urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] })];
-    if let Ok(url) = std::env::var("NEXUS_TURN_URL") {
-        v.push(json!({
-            "urls": [url],
-            "username": std::env::var("NEXUS_TURN_USER").unwrap_or_default(),
-            "credential": std::env::var("NEXUS_TURN_PASS").unwrap_or_default(),
-        }));
-    }
-    Value::Array(v)
+fn is_local_host(h: &str) -> bool {
+    h == "localhost" || h == "::1" || h.starts_with("127.")
 }
 
+impl Hub {
+    /// STUN for everyone, plus the built-in TURN relay for clients that reach this server
+    /// through a non-local address (the address they used is also the relay address).
+    fn ice_servers(&self, host: Option<&str>) -> Value {
+        let mut v = vec![json!({ "urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] })];
+        if let (Some((secret, port)), Some(h)) = (&self.cfg.turn, host.filter(|h| !is_local_host(h))) {
+            if let Ok((user, cred)) = turn::auth::generate_long_term_credentials(secret, Duration::from_secs(8 * 3600)) {
+                let h = if h.contains(':') { format!("[{h}]") } else { h.to_string() };
+                v.push(json!({
+                    "urls": [format!("stun:{h}:{port}"), format!("turn:{h}:{port}?transport=udp")],
+                    "username": user, "credential": cred,
+                }));
+            }
+        }
+        if let Ok(url) = std::env::var("NEXUS_TURN_URL") {
+            v.push(json!({
+                "urls": [url],
+                "username": std::env::var("NEXUS_TURN_USER").unwrap_or_default(),
+                "credential": std::env::var("NEXUS_TURN_PASS").unwrap_or_default(),
+            }));
+        }
+        Value::Array(v)
+    }
+}
 impl State {
     fn send(&self, conn: u64, v: &Value) {
         if let Some(c) = self.conns.get(&conn) {

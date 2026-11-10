@@ -31,8 +31,28 @@ window.Social = (() => {
   };
   const V = {
     room: null, local: null, camTrack: null, screen: null, mixTrack: null, ctx: null, muted: false, deaf: false,
-    peers: new Map(), tiles: new Map(), stops: new Map(), calling: null, preview: null,
+    peers: new Map(), tiles: new Map(), stops: new Map(), calling: null, preview: null, devIds: { mic: '', cam: '' },
   };
+
+  /* ───────────── devices: microphone, headphones, camera ───────────── */
+
+  const audioConstraints = (id) => ({ echoCancellation: true, noiseSuppression: true, autoGainControl: true, ...(id ? { deviceId: { exact: id } } : {}) });
+  const videoConstraints = (id) => ({ width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, ...(id ? { deviceId: { exact: id } } : {}) });
+
+  /** Opens the chosen device; falls back to the system default if it was unplugged. */
+  async function openDevice(kind, id) {
+    const ask = (dev) => navigator.mediaDevices.getUserMedia(kind === 'audio' ? { audio: audioConstraints(dev) } : { video: videoConstraints(dev) });
+    try { return await ask(id); } catch (e) {
+      if (id && (e.name === 'OverconstrainedError' || e.name === 'NotFoundError')) {
+        toast(`Selected ${kind === 'audio' ? 'microphone' : 'camera'} not found – using the default`, 'err');
+        return ask('');
+      }
+      throw e;
+    }
+  }
+  const getMic = () => openDevice('audio', S.settings.micId || '');
+  const getCam = () => openDevice('video', S.settings.camId || '');
+  const applySink = (el) => { if (el && el.setSinkId) el.setSinkId(S.settings.speakerId || '').catch(() => {}); };
 
   const send = (o) => { if (st.ws && st.ws.readyState === 1) st.ws.send(JSON.stringify(o)); };
   const desktop = () => !!window.__TAURI__;
@@ -69,15 +89,21 @@ window.Social = (() => {
     try {
       const j = await (await fetch(`${base}/api/health`, { cache: 'no-store' })).json();
       running = !!j.ok;
+      st.inviteRequired = !!j.invite;
       label = `${j.name} · ${j.users} accounts · ${j.online} online`;
       // a brand-new server has no accounts yet: start on "Create account"
       if (j.users === 0 && !st.token && st.mode === 'login' && !st.modeTouched) setMode('register');
     } catch { /* offline */ }
     $('#soc-sdot').classList.toggle('on', running);
     $('#soc-sstat').textContent = label;
+    updateInviteField();
     $('#soc-sstart').hidden = running || !isLocal || !desktop();
     $('#soc-sstop').hidden = !(running && isLocal && desktop());
     return running;
+  }
+
+  function updateInviteField() {
+    $('#soc-invite-box').hidden = !(st.mode === 'register' && st.inviteRequired);
   }
 
   function setMode(m) {
@@ -86,6 +112,7 @@ window.Social = (() => {
     $('#soc-go .bp-label').textContent = m === 'login' ? 'LOG IN' : 'CREATE ACCOUNT';
     $('#soc-pass').autocomplete = m === 'login' ? 'current-password' : 'new-password';
     $('#soc-err').textContent = '';
+    updateInviteField();
   }
 
   async function submitAuth() {
@@ -102,7 +129,7 @@ window.Social = (() => {
         await checkServer();
       }
       const r = await fetch(`${base}/api/${st.mode}`, {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password }),
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password, invite: $('#soc-invite').value.trim() || undefined }),
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok) { err.textContent = j.error || `Server answered ${r.status}`; return; }
@@ -406,7 +433,8 @@ window.Social = (() => {
     V.preview = new MediaStream();
     try { V.ctx ||= new AudioContext(); V.ctx.resume(); } catch { /* audio analysis optional */ }
     try {
-      V.local = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      V.local = await getMic();
+      V.devIds.mic = S.settings.micId || '';
       const t = V.local.getAudioTracks()[0];
       if (t) watchSpeaking('me', t);
     } catch (e) {
@@ -560,7 +588,8 @@ window.Social = (() => {
   // ── camera, screen, mute
   async function startCamera(silent) {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } });
+      const s = await getCam();
+      V.devIds.cam = S.settings.camId || '';
       V.camTrack = s.getVideoTracks()[0];
       V.camTrack.onended = () => stopCamera();
       applyVideo(silent);
@@ -647,7 +676,7 @@ window.Social = (() => {
     V.tiles.set(key, el);
     const v = el.querySelector('video');
     if (isMe) v.srcObject = V.preview;
-    else { const p = V.peers.get(key); if (p) { v.srcObject = p.stream; v.muted = V.deaf; v.play().catch(() => {}); } }
+    else { const p = V.peers.get(key); if (p) { applySink(v); v.srcObject = p.stream; v.muted = V.deaf; v.play().catch(() => {}); } }
     return el;
   }
 
@@ -694,6 +723,7 @@ window.Social = (() => {
     const beep = () => {
       try {
         V.ctx ||= new AudioContext();
+        try { V.ctx.setSinkId?.(S.settings.speakerId || ''); } catch { /* default output */ }
         const o = V.ctx.createOscillator();
         const g = V.ctx.createGain();
         o.type = 'sine';
@@ -750,6 +780,190 @@ window.Social = (() => {
     send({ t: 'call', to: name, video: !!video });
   }
 
+  /* ───────────── device settings (selects, test, live switching) ───────────── */
+
+  const devTest = { stream: null, raf: 0, ctx: null };
+
+  async function fillDevices() {
+    let all = [];
+    try { all = await navigator.mediaDevices.enumerateDevices(); } catch {
+      $('#dev-msg').textContent = 'Device access is not available here';
+      return;
+    }
+    const fill = (sel, kind, cur, fallback) => {
+      const list = all.filter((d) => d.kind === kind && d.deviceId !== 'default' && d.deviceId !== 'communications');
+      const el = $(sel);
+      el.innerHTML = `<option value="">System default</option>${list.map((d, i) => `<option value="${esc(d.deviceId)}">${esc(d.label || `${fallback} ${i + 1}`)}</option>`).join('')}`;
+      if (cur && !list.some((d) => d.deviceId === cur)) el.insertAdjacentHTML('beforeend', `<option value="${esc(cur)}">Saved device (not connected)</option>`);
+      el.value = cur || '';
+    };
+    fill('#dev-mic', 'audioinput', S.settings.micId, 'Microphone');
+    fill('#dev-spk', 'audiooutput', S.settings.speakerId, 'Speakers');
+    fill('#dev-cam', 'videoinput', S.settings.camId, 'Camera');
+    $('#dev-allow').hidden = all.some((d) => d.label);
+  }
+
+  async function allowDevices() {
+    const msg = $('#dev-msg');
+    msg.className = 'dev-msg';
+    try {
+      let s;
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }); } catch { s = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      s.getTracks().forEach((t) => t.stop());
+    } catch (e) {
+      msg.className = 'dev-msg err';
+      msg.textContent = `Access was blocked: ${e.message || e}`;
+    }
+    fillDevices();
+  }
+
+  function stopDeviceTest() {
+    cancelAnimationFrame(devTest.raf);
+    devTest.stream?.getTracks().forEach((t) => t.stop());
+    devTest.stream = null;
+    try { devTest.ctx?.close(); } catch { /* ignore */ }
+    devTest.ctx = null;
+    const v = $('#dev-preview');
+    v.srcObject = null; v.hidden = true;
+    $('#dev-meter').hidden = true;
+    $('#dev-meter i').style.width = '0';
+    $('#dev-test').textContent = 'Test mic & camera';
+  }
+
+  async function toggleDeviceTest() {
+    if (devTest.stream) { stopDeviceTest(); return; }
+    const mic = $('#dev-mic').value;
+    const cam = $('#dev-cam').value;
+    const msg = $('#dev-msg');
+    msg.className = 'dev-msg';
+    msg.textContent = '';
+    const dev = (id) => (id ? { deviceId: { exact: id } } : true);
+    try {
+      devTest.stream = await navigator.mediaDevices.getUserMedia({ audio: dev(mic), video: dev(cam) });
+    } catch {
+      try {
+        devTest.stream = await navigator.mediaDevices.getUserMedia({ audio: dev(mic) });
+        msg.textContent = 'No camera available – testing the microphone only';
+      } catch (e) {
+        msg.className = 'dev-msg err';
+        msg.textContent = `Could not open the devices: ${e.message || e}`;
+        return;
+      }
+    }
+    const s = devTest.stream;
+    if (s.getVideoTracks().length) { const v = $('#dev-preview'); v.srcObject = s; v.hidden = false; }
+    $('#dev-meter').hidden = false;
+    $('#dev-test').textContent = 'Stop test';
+    try {
+      devTest.ctx = new AudioContext();
+      const an = devTest.ctx.createAnalyser();
+      an.fftSize = 512;
+      devTest.ctx.createMediaStreamSource(s).connect(an);
+      const buf = new Uint8Array(an.fftSize);
+      const loop = () => {
+        an.getByteTimeDomainData(buf);
+        let sum = 0;
+        for (const x of buf) { const d = (x - 128) / 128; sum += d * d; }
+        $('#dev-meter i').style.width = `${Math.min(100, Math.sqrt(sum / buf.length) * 320)}%`;
+        devTest.raf = requestAnimationFrame(loop);
+      };
+      loop();
+    } catch { /* no meter */ }
+    fillDevices();
+  }
+
+  /** A short two-tone sound generated on the fly, played on the chosen output. */
+  async function playTestSound() {
+    const rate = 22050;
+    const n = Math.floor(rate * 0.8);
+    const buf = new DataView(new ArrayBuffer(44 + n * 2));
+    const w = (o, s) => [...s].forEach((c, i) => buf.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); buf.setUint32(16, 16, true);
+    buf.setUint16(20, 1, true); buf.setUint16(22, 1, true); buf.setUint32(24, rate, true); buf.setUint32(28, rate * 2, true);
+    buf.setUint16(32, 2, true); buf.setUint16(34, 16, true); w(36, 'data'); buf.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+      const f = i < n / 2 ? 660 : 880;
+      const env = Math.min(1, i / 400, (n - i) / 800);
+      buf.setInt16(44 + i * 2, Math.sin((2 * Math.PI * f * i) / rate) * 9000 * env, true);
+    }
+    const a = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+    try { if (a.setSinkId) await a.setSinkId($('#dev-spk').value || ''); await a.play(); } catch (e) {
+      $('#dev-msg').className = 'dev-msg err';
+      $('#dev-msg').textContent = `Could not play on that output: ${e.message || e}`;
+    }
+  }
+
+  /** Called after the settings were saved: switches the running call to the new devices. */
+  async function applyDevices() {
+    for (const el of V.tiles.values()) applySink(el.querySelector('video'));
+    if (!V.room) return;
+    const mic = S.settings.micId || '';
+    const cam = S.settings.camId || '';
+    if (V.local && mic !== V.devIds.mic) {
+      try {
+        const s = await getMic();
+        const nt = s.getAudioTracks()[0];
+        V.local.getTracks().forEach((x) => x.stop());
+        V.local = s;
+        V.devIds.mic = mic;
+        nt.enabled = !(V.muted || V.deaf);
+        if (V.screen && V.mixTrack) { V.mixTrack.stop(); V.mixTrack = null; mixScreenAudio(V.screen); } else for (const p of V.peers.values()) p.audioSender?.replaceTrack(nt).catch(() => {});
+        watchSpeaking('me', nt);
+      } catch (e) { toast(`Could not switch the microphone: ${e.message || e}`, 'err'); }
+    }
+    if (V.camTrack && cam !== V.devIds.cam) {
+      V.camTrack.stop();
+      V.camTrack = null;
+      await startCamera();
+    }
+  }
+
+  /* ───────────── internet mode (server reachable from other networks) ───────────── */
+
+  function renderNet(s) {
+    const box = $('#net-info');
+    if (!s || !s.internet) { box.hidden = true; return; }
+    box.hidden = false;
+    const i = s.info || {};
+    const addr = i.publicIp ? `http://${i.publicIp}:7777` : '';
+    const upnp = i.upnp || {};
+    const turn = i.turn || {};
+    const mark = (ok, text) => `<span class="${ok ? 'ok' : 'warn'}">${ok ? '●' : '○'}</span> ${esc(text)}`;
+    box.innerHTML = `
+      <div class="row2"><b>Address for friends</b> ${addr ? `<code>${esc(addr)}</code><button class="btn-ghost mini" data-copy="${esc(addr)}">Copy</button>` : '<span class="warn">unknown – set up port forwarding and use your public IP</span>'}</div>
+      <div class="row2"><b>Invite code</b> <code>${esc(s.inviteCode || '')}</code><button class="btn-ghost mini" data-copy="${esc(s.inviteCode || '')}">Copy</button></div>
+      <div class="row2">${mark(s.running, s.running ? 'Server is running' : 'Server is not running')}</div>
+      <div class="row2">${mark(upnp.ok, upnp.ok ? 'Router ports opened automatically (UPnP)' : `UPnP: ${upnp.message || 'not available'}`)}</div>
+      <div class="row2">${mark(turn.ok, turn.ok ? `Call relay (TURN) on UDP ${turn.port}` : `Call relay: ${turn.message || 'not running'}`)}</div>
+      <ul>
+        <li>Friends enter the address above (Chat &amp; Voice → Server) and the invite code when creating their account.</li>
+        <li>If Windows asks, allow <b>nexus-server.exe</b> through the firewall.</li>
+        <li>Without UPnP forward <b>TCP 7777</b> and <b>UDP 3478</b> + <b>49160–49200</b> to this PC.</li>
+        <li>The connection is <b>not encrypted</b>: use a password you use nowhere else, or run Nexus over a VPN such as Tailscale.</li>
+      </ul>`;
+  }
+
+  async function netRefresh() {
+    let s = null;
+    try { s = await api.invoke('server_status'); } catch { /* browser preview */ }
+    $('#set-internet').checked = !!(s && s.internet);
+    renderNet(s);
+  }
+
+  async function setInternet(on) {
+    const sw = $('#set-internet');
+    sw.disabled = true;
+    try {
+      const s = await api.invoke('set_internet_mode', { enabled: on });
+      S.settings.internetMode = on;
+      S.settings.inviteCode = s.inviteCode || S.settings.inviteCode;
+      renderNet(s);
+      toast(on ? 'Internet mode on – allow the Windows Firewall prompt if it appears' : 'Internet mode off – the server is local only again');
+    } catch (e) {
+      sw.checked = !on;
+      toast(String(e), 'err');
+    } finally { sw.disabled = false; }
+  }
   /* ───────────── TeamSpeak ───────────── */
 
   const tsSet = (id, hidden) => { $(id).hidden = hidden; };
@@ -979,10 +1193,19 @@ window.Social = (() => {
       input.value = ''; fit();
     });
 
+    $('#dev-allow').addEventListener('click', allowDevices);
+    $('#dev-test').addEventListener('click', toggleDeviceTest);
+    $('#dev-sound').addEventListener('click', playTestSound);
+    $('#set-internet').addEventListener('change', (e) => setInternet(e.target.checked));
+    $('#net-info').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-copy]');
+      if (b) navigator.clipboard?.writeText(b.dataset.copy).then(() => toast('Copied'));
+    });
+    navigator.mediaDevices?.addEventListener?.('devicechange', () => { if ($('#settings').classList.contains('on')) fillDevices(); });
     initTs();
     setMode('login');
     if (st.token && st.base) { st.wantOnline = true; resume(); }
   }
 
-  return { init, onShow, state: st };
+  return { init, onShow, state: st, fillDevices, stopDeviceTest, applyDevices, netRefresh };
 })();

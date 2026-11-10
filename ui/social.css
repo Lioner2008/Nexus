@@ -194,3 +194,22 @@
   .soc-app { grid-template-columns: 220px minmax(0, 1fr); }
   .soc-right { display: none; }
 }
+
+/* ── devices + internet mode (settings) ── */
+.dev-sel { max-width: 250px; width: 250px; height: 38px; padding: 0 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; outline: 0; color: var(--text); cursor: pointer; text-overflow: ellipsis; }
+.dev-sel:hover, .dev-sel:focus { border-color: var(--line2); }
+.dev-sel option { background: var(--panel); }
+.dev-test { padding: 6px 0 4px; }
+.dev-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.dev-meter { height: 8px; margin-top: 12px; border-radius: 99px; background: var(--line); overflow: hidden; }
+.dev-meter i { display: block; height: 100%; width: 0; background: var(--acc); box-shadow: 0 0 10px var(--acc); transition: width .08s linear; }
+.dev-preview { display: block; width: 100%; max-height: 220px; margin-top: 10px; border-radius: 12px; background: #000; object-fit: cover; transform: scaleX(-1); }
+.dev-msg { display: block; min-height: 16px; margin-top: 8px; color: var(--dim); font-size: 12px; }
+.dev-msg.err { color: var(--danger); }
+.net-info { margin: 4px 0 10px; padding: 14px; border-radius: 12px; background: var(--bg); border: 1px solid var(--line); font-size: 12.5px; color: var(--mut); user-select: text; }
+.net-info .row2 { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.net-info b { color: var(--text); font-weight: 600; }
+.net-info code { padding: 2px 7px; border-radius: 6px; background: var(--panel2); color: var(--acc-t); font: 600 12.5px 'Cascadia Mono', Consolas, monospace; user-select: all; }
+.net-info .ok { color: #4ade80; } .net-info .bad { color: var(--danger); } .net-info .warn { color: #fbbf24; }
+.net-info .mini { width: auto; padding: 0 8px; height: 22px; font-size: 11px; }
+.net-info ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.5; }

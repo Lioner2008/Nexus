@@ -170,6 +170,7 @@
             <div class="seg2" id="soc-mode"><button class="on" data-m="login">Log in</button><button data-m="register">Create account</button></div>
             <label class="field"><span>Username</span><input id="soc-user" type="text" autocomplete="username" spellcheck="false" maxlength="24"></label>
             <label class="field"><span>Password</span><input id="soc-pass" type="password" autocomplete="current-password" maxlength="200"></label>
+            <label class="field" id="soc-invite-box" hidden><span>Invite code</span><input id="soc-invite" type="text" autocomplete="off" spellcheck="false" maxlength="40" placeholder="From the person who runs the server"></label>
             <details class="soc-adv" id="soc-adv">
               <summary>Server</summary>
               <label class="field"><span>Server address</span><input id="soc-server" type="text" spellcheck="false" placeholder="http://127.0.0.1:7777"></label>
@@ -283,6 +284,27 @@
       <small>The folder that contains StarCitizen\LIVE, e.g. D:\Games\Roberts Space Industries</small>
     </label>
 
+    <div class="sec-title">Audio &amp; video devices</div>
+    <div class="setrow"><div><b>Microphone</b><small>Used in voice rooms and calls</small></div><select class="dev-sel" id="dev-mic"></select></div>
+    <div class="setrow"><div><b>Headphones / speakers</b><small>Where you hear the others</small></div><select class="dev-sel" id="dev-spk"></select></div>
+    <div class="setrow"><div><b>Camera</b><small>Used for video calls</small></div><select class="dev-sel" id="dev-cam"></select></div>
+    <div class="dev-test">
+      <div class="dev-actions">
+        <button class="btn-ghost sm" id="dev-allow" hidden>Allow access to show device names</button>
+        <button class="btn-ghost sm" id="dev-test">Test mic &amp; camera</button>
+        <button class="btn-ghost sm" id="dev-sound">Play test sound</button>
+      </div>
+      <div class="dev-meter" id="dev-meter" hidden><i></i></div>
+      <video class="dev-preview" id="dev-preview" autoplay playsinline muted hidden></video>
+      <small class="dev-msg" id="dev-msg"></small>
+    </div>
+
+    <div class="sec-title">Play with friends over the internet</div>
+    <div class="setrow">
+      <div><b>Internet mode</b><small>Opens your Nexus server to the internet (port 7777), with a call relay (TURN) and an invite code</small></div>
+      <label class="switch"><input type="checkbox" id="set-internet"><i></i></label>
+    </div>
+    <div class="net-info" id="net-info" hidden></div>
     <div class="sec-title">Accounts &amp; artwork</div>
     <label class="field">
       <span>SteamGridDB API key <a href="https://www.steamgriddb.com/profile/preferences/api" data-ext>get a key</a></span>

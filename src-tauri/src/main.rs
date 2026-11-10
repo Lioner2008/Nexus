@@ -64,6 +64,13 @@ pub struct Settings {
     pub ts_address: String,
     // do not start the local Nexus server together with the launcher
     pub no_local_server: bool,
+    // chosen audio/video devices (empty = system default)
+    pub mic_id: String,
+    pub speaker_id: String,
+    pub cam_id: String,
+    // internet mode: server reachable from other networks (UPnP + TURN relay + invite code)
+    pub internet_mode: bool,
+    pub invite_code: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -434,6 +441,10 @@ struct ServerStatus {
     running: bool,
     address: String,
     has_binary: bool,
+    internet: bool,
+    invite_code: String,
+    /// network details reported by the server (public address, UPnP, TURN)
+    info: Option<serde_json::Value>,
 }
 
 fn server_exe() -> Option<PathBuf> {
@@ -451,37 +462,54 @@ async fn port_open(addr: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Command line of the server: local only, or open to the internet with relay and invite code.
+fn server_args(internet: bool, invite: &str, data: &Path) -> Vec<String> {
+    let mut a = vec![
+        "--bind".to_string(),
+        if internet { "0.0.0.0:7777".to_string() } else { LOCAL_SERVER.to_string() },
+        "--data".to_string(),
+        data.to_string_lossy().to_string(),
+    ];
+    if internet {
+        a.push("--turn".into());
+        a.push("--upnp".into());
+        if !invite.is_empty() {
+            a.push("--invite".into());
+            a.push(invite.to_string());
+        }
+    }
+    a
+}
+
 #[cfg(windows)]
-fn spawn_detached(exe: &Path, data: &Path) -> std::io::Result<()> {
+fn spawn_detached(exe: &Path, args: &[String]) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     // CREATE_NO_WINDOW | DETACHED_PROCESS: the server keeps running without a console
     Command::new(exe)
-        .args(["--bind", LOCAL_SERVER, "--data"])
-        .arg(data)
+        .args(args)
         .creation_flags(0x0800_0000 | 0x0000_0008)
         .spawn()
         .map(|_| ())
 }
 
 #[cfg(not(windows))]
-fn spawn_detached(exe: &Path, data: &Path) -> std::io::Result<()> {
-    Command::new(exe)
-        .args(["--bind", LOCAL_SERVER, "--data"])
-        .arg(data)
-        .spawn()
-        .map(|_| ())
+fn spawn_detached(exe: &Path, args: &[String]) -> std::io::Result<()> {
+    Command::new(exe).args(args).spawn().map(|_| ())
 }
 
-async fn ensure_local_server(dir: &Path) -> Result<bool, String> {
+/// Starts the server when nothing listens on the port yet; waits up to `wait_ms` for it.
+async fn ensure_local_server(dir: &Path, internet: bool, invite: &str, wait_ms: u64) -> Result<bool, String> {
     if port_open(LOCAL_SERVER).await {
         return Ok(true);
     }
     let exe = server_exe().ok_or("nexus-server.exe was not found next to Nexus")?;
     let data = dir.join("server");
     std::fs::create_dir_all(&data).ok();
-    spawn_detached(&exe, &data).map_err(|e| format!("Could not start the server: {e}"))?;
-    for _ in 0..20 {
+    spawn_detached(&exe, &server_args(internet, invite, &data)).map_err(|e| format!("Could not start the server: {e}"))?;
+    let mut waited = 0;
+    while waited < wait_ms {
         tokio::time::sleep(Duration::from_millis(150)).await;
+        waited += 150;
         if port_open(LOCAL_SERVER).await {
             return Ok(true);
         }
@@ -489,28 +517,79 @@ async fn ensure_local_server(dir: &Path) -> Result<bool, String> {
     Err("The server did not start in time".into())
 }
 
+async fn status_full(state: &AppState) -> ServerStatus {
+    let running = port_open(LOCAL_SERVER).await;
+    let (internet, invite_code) = {
+        let s = state.settings.lock().unwrap();
+        (s.internet_mode, s.invite_code.clone())
+    };
+    let info = if running {
+        match state.http.get(format!("http://{LOCAL_SERVER}/api/admin/info")).send().await {
+            Ok(r) => r.json::<serde_json::Value>().await.ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    ServerStatus { running, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some(), internet, invite_code, info }
+}
+
+async fn stop_server(state: &AppState) {
+    let _ = state.http.post(format!("http://{LOCAL_SERVER}/api/admin/shutdown")).send().await;
+    for _ in 0..40 {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if !port_open(LOCAL_SERVER).await {
+            return;
+        }
+    }
+}
+
+/// 8 readable characters (no 0/O/1/I) for the invite code.
+fn new_invite_code() -> String {
+    use rand::Rng;
+    const A: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let mut r = rand::thread_rng();
+    (0..8).map(|_| A[r.gen_range(0..A.len())] as char).collect()
+}
+
 #[tauri::command]
-async fn server_status() -> ServerStatus {
-    ServerStatus { running: port_open(LOCAL_SERVER).await, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() }
+async fn server_status(state: State<'_, AppState>) -> Result<ServerStatus, String> {
+    Ok(status_full(&state).await)
 }
 
 #[tauri::command]
 async fn start_local_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
-    let running = ensure_local_server(&state.dir).await?;
-    Ok(ServerStatus { running, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() })
+    let (internet, invite) = {
+        let s = state.settings.lock().unwrap();
+        (s.internet_mode, s.invite_code.clone())
+    };
+    ensure_local_server(&state.dir, internet, &invite, if internet { 60_000 } else { 3_000 }).await?;
+    Ok(status_full(&state).await)
 }
 
 #[tauri::command]
 async fn stop_local_server(state: State<'_, AppState>) -> Result<ServerStatus, String> {
-    let _ = state
-        .http
-        .post(format!("http://{LOCAL_SERVER}/api/admin/shutdown"))
-        .send()
-        .await;
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    Ok(ServerStatus { running: port_open(LOCAL_SERVER).await, address: LOCAL_SERVER.into(), has_binary: server_exe().is_some() })
+    stop_server(&state).await;
+    Ok(status_full(&state).await)
 }
 
+/// Switches the server between "this PC only" and "reachable from the internet" (restarts it).
+#[tauri::command]
+async fn set_internet_mode(state: State<'_, AppState>, enabled: bool) -> Result<ServerStatus, String> {
+    let invite = {
+        let mut s = state.settings.lock().unwrap();
+        s.internet_mode = enabled;
+        if enabled && s.invite_code.is_empty() {
+            s.invite_code = new_invite_code();
+        }
+        s.invite_code.clone()
+    };
+    state.save_settings();
+    stop_server(&state).await;
+    // UPnP discovery and port mapping can take a while
+    ensure_local_server(&state.dir, enabled, &invite, 60_000).await?;
+    Ok(status_full(&state).await)
+}
 // ───────────────────────────── TeamSpeak 3 (ClientQuery) ─────────────────────────────
 
 /// Runs a call on the active TeamSpeak connection and drops the connection when it is dead.
@@ -625,11 +704,15 @@ fn main() {
                 ts: tokio::sync::Mutex::new(None),
             });
             // start the local social server in the background unless the user switched that off
-            let auto = !app.state::<AppState>().settings.lock().unwrap().no_local_server;
+            let (auto, internet, invite) = {
+                let st = app.state::<AppState>();
+                let s = st.settings.lock().unwrap();
+                (!s.no_local_server, s.internet_mode, s.invite_code.clone())
+            };
             if auto {
                 let dir = app.state::<AppState>().dir.clone();
                 tauri::async_runtime::spawn(async move {
-                    if let Err(e) = ensure_local_server(&dir).await {
+                    if let Err(e) = ensure_local_server(&dir, internet, &invite, 60_000).await {
                         eprintln!("local server: {e}");
                     }
                 });
@@ -652,6 +735,7 @@ fn main() {
             server_status,
             start_local_server,
             stop_local_server,
+            set_internet_mode,
             ts_connect,
             ts_disconnect,
             ts_connected,
