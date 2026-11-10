@@ -1,0 +1,21 @@
+[package]
+name = "nexus-installer"
+version = "0.3.0"
+edition = "2021"
+description = "Installer / uninstaller for Nexus (single exe, no admin rights needed)"
+
+[dependencies]
+zip = { version = "2", default-features = false, features = ["deflate"] }
+winreg = "0.52"
+mslnk = "0.1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

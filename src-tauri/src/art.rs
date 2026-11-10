@@ -125,14 +125,114 @@ async fn fetch_bytes(st: &AppState, url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
+/// Shrinks artwork to the size the UI actually shows. A 600x900 PNG needs ~2 MB of memory once
+/// decoded, a 400x600 JPEG only ~1 MB (and ~40 KB on disk): with hundreds of games that is the difference.
+pub fn optimize(kind: &str, bytes: &[u8], orig_ext: &'static str) -> (Vec<u8>, &'static str) {
+    use image::{
+        codecs::{jpeg::JpegEncoder, png::PngEncoder},
+        imageops::FilterType,
+        ExtendedColorType, ImageEncoder,
+    };
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return (bytes.to_vec(), orig_ext);
+    };
+    let (max_w, max_h, png) = match kind {
+        "cover" => (400, 600, false),
+        "hero" => (1600, 520, false),
+        "logo" => (640, 320, true),
+        _ => (128, 128, true),
+    };
+    let img = if img.width() > max_w || img.height() > max_h {
+        img.resize(max_w, max_h, FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut out = Vec::new();
+    let ok = if png {
+        let rgba = img.to_rgba8();
+        PngEncoder::new(&mut out)
+            .write_image(rgba.as_raw(), rgba.width(), rgba.height(), ExtendedColorType::Rgba8)
+            .is_ok()
+    } else {
+        let rgb = img.to_rgb8();
+        JpegEncoder::new_with_quality(&mut out, 85)
+            .write_image(rgb.as_raw(), rgb.width(), rgb.height(), ExtendedColorType::Rgb8)
+            .is_ok()
+    };
+    if ok && !out.is_empty() {
+        (out, if png { "png" } else { "jpg" })
+    } else {
+        (bytes.to_vec(), orig_ext)
+    }
+}
+
 /// Automatic artwork: stable file name per game and type.
 async fn download(st: &AppState, url: &str, id: &str, kind: &str) -> Result<String, String> {
     let bytes = fetch_bytes(st, url).await?;
+    let (kind_s, ext0) = (kind.to_string(), url_ext(url));
+    let (data, ext) = tauri::async_runtime::spawn_blocking(move || optimize(&kind_s, &bytes, ext0))
+        .await
+        .map_err(|e| e.to_string())?;
     let dir = st.dir.join("art");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}_{kind}.{}", safe_id(id), url_ext(url)));
-    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let path = dir.join(format!("{}_{kind}.{ext}", safe_id(id)));
+    std::fs::write(&path, &data).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().to_string())
+}
+
+/// Clean-up of artwork downloaded by older versions (big PNGs). Cheap when nothing is left to do.
+/// Returns the artwork map when something changed.
+pub fn migrate_existing(st: &AppState) -> Option<std::collections::HashMap<String, Art>> {
+    let snapshot = { st.cache.lock().unwrap().art.clone() };
+    let mut changed = false;
+    for (id, art) in snapshot {
+        for (kind, path, limit) in [
+            ("cover", art.cover.clone(), 150_000u64),
+            ("hero", art.hero.clone(), 600_000),
+            ("logo", art.logo.clone(), 200_000),
+            ("icon", art.icon.clone(), 40_000),
+        ] {
+            let Some(path) = path else { continue };
+            let p = Path::new(&path);
+            let Ok(meta) = std::fs::metadata(p) else { continue };
+            let is_png_photo = (kind == "cover" || kind == "hero") && path.to_lowercase().ends_with(".png");
+            if meta.len() <= limit && !is_png_photo {
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(p) else { continue };
+            let (data, ext) = optimize(kind, &bytes, "png");
+            if data.len() >= bytes.len() {
+                continue;
+            }
+            let new_path = p.with_extension(ext);
+            if std::fs::write(&new_path, &data).is_err() {
+                continue;
+            }
+            if new_path != p {
+                let _ = std::fs::remove_file(p);
+            }
+            let new_s = new_path.to_string_lossy().to_string();
+            let mut c = st.cache.lock().unwrap();
+            if let Some(a) = c.art.get_mut(&id) {
+                let slot = match kind {
+                    "cover" => &mut a.cover,
+                    "hero" => &mut a.hero,
+                    "logo" => &mut a.logo,
+                    _ => &mut a.icon,
+                };
+                if slot.as_deref() == Some(path.as_str()) {
+                    *slot = Some(new_s);
+                    changed = true;
+                }
+            }
+        }
+    }
+    if changed {
+        st.save_cache();
+        Some(st.cache.lock().unwrap().art.clone())
+    } else {
+        None
+    }
 }
 
 fn custom_path(st: &AppState, id: &str, kind: &str, ext: &str) -> Result<PathBuf, String> {
@@ -325,8 +425,12 @@ pub async fn set_custom(st: &AppState, id: &str, kind: &str, source: &str) -> Re
     let source = source.trim();
     let target_path = if source.starts_with("https://") {
         let bytes = fetch_bytes(st, source).await?;
-        let p = custom_path(st, id, kind, url_ext(source))?;
-        std::fs::write(&p, &bytes).map_err(|e| e.to_string())?;
+        let (k, e0) = (kind.to_string(), url_ext(source));
+        let (data, ext) = tauri::async_runtime::spawn_blocking(move || optimize(&k, &bytes, e0))
+            .await
+            .map_err(|e| e.to_string())?;
+        let p = custom_path(st, id, kind, ext)?;
+        std::fs::write(&p, &data).map_err(|e| e.to_string())?;
         p
     } else if source.starts_with("http://") {
         return Err("Only https:// links are supported".into());
@@ -344,8 +448,13 @@ pub async fn set_custom(st: &AppState, id: &str, kind: &str, source: &str) -> Re
         if !meta.is_file() || meta.len() as usize > MAX_BYTES {
             return Err("Image is missing or too large (max 40 MB)".into());
         }
-        let p = custom_path(st, id, kind, &ext)?;
-        std::fs::copy(src, &p).map_err(|e| e.to_string())?;
+        let raw = std::fs::read(src).map_err(|e| e.to_string())?;
+        let (k, e0) = (kind.to_string(), IMG_EXT.iter().copied().find(|x| *x == ext).unwrap_or("png"));
+        let (data, ext2) = tauri::async_runtime::spawn_blocking(move || optimize(&k, &raw, e0))
+            .await
+            .map_err(|e| e.to_string())?;
+        let p = custom_path(st, id, kind, ext2)?;
+        std::fs::write(&p, &data).map_err(|e| e.to_string())?;
         p
     };
     let path = target_path.to_string_lossy().to_string();

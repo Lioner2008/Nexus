@@ -452,7 +452,7 @@ window.Social = (() => {
   }
 
   function endVoiceLocal(msg) {
-    for (const p of V.peers.values()) { try { p.pc.close(); } catch { /* ignore */ } }
+    for (const p of V.peers.values()) closePeer(p);
     V.peers.clear();
     for (const stop of V.stops.values()) stop();
     V.stops.clear();
@@ -468,16 +468,40 @@ window.Social = (() => {
     if (msg) toast(msg, 'err');
   }
 
+  function closePeer(p) {
+    try { p.pc.close(); } catch { /* ignore */ }
+    if (p.audioEl) { p.audioEl.srcObject = null; p.audioEl.remove(); }
+  }
+
+  /** Voice is played by a dedicated <audio> element, independent of the (possibly hidden) video tile. */
+  function playPeerAudio(peer) {
+    const el = peer.audioEl;
+    if (!el || !peer.audioStream.getAudioTracks().length) return;
+    if (el.srcObject !== peer.audioStream) el.srcObject = peer.audioStream;
+    el.muted = V.deaf;
+    applySink(el);
+    el.play().catch(() => { /* blocked until the next click, see resumeAudio() */ });
+  }
+
+  /** Browsers may block audio until the user interacts: retry on every click. */
+  function resumeAudio() {
+    try { V.ctx?.resume(); } catch { /* ignore */ }
+    for (const p of V.peers.values()) if (p.audioEl?.paused) playPeerAudio(p);
+  }
+
   function makePeer(conn, user, state = {}) {
     if (V.peers.has(conn)) return V.peers.get(conn);
     const pc = new RTCPeerConnection({ iceServers: st.ice });
     const peer = {
-      conn, user, pc, polite: st.conn < conn, makingOffer: false, ignoreOffer: false, stream: new MediaStream(),
+      conn, user, pc, polite: st.conn < conn, makingOffer: false, ignoreOffer: false,
+      audioStream: new MediaStream(), videoStream: new MediaStream(), audioEl: document.createElement('audio'),
       audioSender: null, videoSender: null, state: { video: false, screen: false, muted: false, deaf: false, ...state },
     };
     const mic = micTrack();
+    peer.audioEl.autoplay = true;
+    $('#soc-audio').appendChild(peer.audioEl);
     if (mic) peer.audioSender = pc.addTrack(mic, V.local || new MediaStream([mic]));
-    else pc.addTransceiver('audio', { direction: 'recvonly' });
+    else peer.audioSender = pc.addTransceiver('audio', { direction: 'sendrecv' }).sender; // track can be added later without renegotiation
     // one video transceiver per peer: it carries the camera or, while sharing, the screen
     const vt = pc.addTransceiver('video', { direction: 'sendrecv' });
     peer.videoSender = vt.sender;
@@ -486,11 +510,15 @@ window.Social = (() => {
 
     pc.onicecandidate = (e) => { if (e.candidate) send({ t: 'signal', to: conn, data: { candidate: e.candidate } }); };
     pc.ontrack = (e) => {
-      peer.stream.addTrack(e.track);
-      if (e.track.kind === 'audio') watchSpeaking(conn, e.track);
-      const tile = V.tiles.get(conn);
-      const v = tile?.querySelector('video');
-      if (v) { v.srcObject = peer.stream; v.play().catch(() => {}); }
+      if (e.track.kind === 'audio') {
+        peer.audioStream.addTrack(e.track);
+        watchSpeaking(conn, e.track);
+        playPeerAudio(peer);
+      } else {
+        peer.videoStream.addTrack(e.track);
+        const v = V.tiles.get(conn)?.querySelector('video');
+        if (v) { v.srcObject = peer.videoStream; v.play().catch(() => {}); }
+      }
     };
     // "perfect negotiation": both sides may offer at once, the polite one backs off
     pc.onnegotiationneeded = async () => {
@@ -544,7 +572,7 @@ window.Social = (() => {
   function onVoiceLeft(conn) {
     const p = V.peers.get(conn);
     if (!p) return;
-    try { p.pc.close(); } catch { /* ignore */ }
+    closePeer(p);
     V.peers.delete(conn);
     V.stops.get(conn)?.();
     V.stops.delete(conn);
@@ -642,7 +670,12 @@ window.Social = (() => {
   function mixScreenAudio(display) {
     const at = display.getAudioTracks()[0];
     const mic = V.local?.getAudioTracks()[0];
-    if (!at || !mic) return;
+    if (!at) return;
+    if (!mic) { // no microphone: send the system sound on its own
+      V.mixTrack = at;
+      for (const p of V.peers.values()) p.audioSender?.replaceTrack(at).catch(() => {});
+      return;
+    }
     try {
       V.ctx ||= new AudioContext();
       const dest = V.ctx.createMediaStreamDestination();
@@ -653,11 +686,25 @@ window.Social = (() => {
     } catch { /* keep the plain microphone */ }
   }
 
+  /** Re-opens the microphone after a failed start (permission, unplugged, wrong device). */
+  async function retryMic() {
+    try {
+      const s = await getMic();
+      V.local?.getTracks().forEach((x) => x.stop());
+      V.local = s;
+      V.devIds.mic = S.settings.micId || '';
+      const nt = s.getAudioTracks()[0];
+      nt.enabled = !(V.muted || V.deaf);
+      if (V.screen && V.mixTrack) { V.mixTrack.stop(); V.mixTrack = null; mixScreenAudio(V.screen); } else for (const p of V.peers.values()) p.audioSender?.replaceTrack(nt).catch(() => {});
+      watchSpeaking('me', nt);
+      renderCall();
+      toast('Microphone connected');
+    } catch (e) { toast(`Microphone still not available: ${e.message || e}`, 'err'); }
+  }
+
   function applyMute() {
     V.local?.getAudioTracks().forEach((t) => { t.enabled = !(V.muted || V.deaf); });
-    for (const el of V.tiles.values()) {
-      if (!el.classList.contains('me')) { const v = el.querySelector('video'); if (v) v.muted = V.deaf; }
-    }
+    for (const p of V.peers.values()) if (p.audioEl) p.audioEl.muted = V.deaf;
     sendState();
     updateTile('me');
     renderCallBar();
@@ -670,13 +717,13 @@ window.Social = (() => {
     el = document.createElement('div');
     el.className = `vtile ${isMe ? 'me' : ''}`;
     el.dataset.key = key;
-    el.innerHTML = `<video autoplay playsinline ${isMe ? 'muted' : ''}></video><div class="big">${avatar(name)}</div><div class="vlabel"><i class="conn"></i><span>${esc(name)}${isMe ? ' (you)' : ''}</span><span class="vic"></span></div>`;
+    el.innerHTML = `<video autoplay playsinline muted></video><div class="big">${avatar(name)}</div><div class="vlabel"><i class="conn"></i><span>${esc(name)}${isMe ? ' (you)' : ''}</span><span class="vic"></span></div>`;
     el.addEventListener('click', () => el.classList.toggle('focus'));
     $('#vgrid').appendChild(el);
     V.tiles.set(key, el);
     const v = el.querySelector('video');
     if (isMe) v.srcObject = V.preview;
-    else { const p = V.peers.get(key); if (p) { applySink(v); v.srcObject = p.stream; v.muted = V.deaf; v.play().catch(() => {}); } }
+    else { const p = V.peers.get(key); if (p) { v.muted = true; v.srcObject = p.videoStream; v.play().catch(() => {}); } }
     return el;
   }
 
@@ -697,6 +744,7 @@ window.Social = (() => {
     const box = $('#soc-call');
     if (!V.room) { box.hidden = true; return; }
     box.hidden = false;
+    $('#call-warn').hidden = !!V.local;
     const r = roomById(V.room);
     $('#call-title').textContent = V.room.startsWith('call:') ? 'Call' : (r?.name || 'Voice');
     $('#call-sub').textContent = V.calling ? `Calling ${V.calling.to}…` : `${V.peers.size + 1} in call`;
@@ -895,7 +943,7 @@ window.Social = (() => {
 
   /** Called after the settings were saved: switches the running call to the new devices. */
   async function applyDevices() {
-    for (const el of V.tiles.values()) applySink(el.querySelector('video'));
+    for (const p of V.peers.values()) applySink(p.audioEl);
     if (!V.room) return;
     const mic = S.settings.micId || '';
     const cam = S.settings.camId || '';
@@ -1162,6 +1210,8 @@ window.Social = (() => {
     });
 
     // call controls
+    document.addEventListener('pointerdown', resumeAudio, { capture: true });
+    $('#call-retry').addEventListener('click', retryMic);
     $('#vbar').addEventListener('click', async (e) => {
       const b = e.target.closest('[data-act]');
       if (!b) return;
@@ -1207,5 +1257,5 @@ window.Social = (() => {
     if (st.token && st.base) { st.wantOnline = true; resume(); }
   }
 
-  return { init, onShow, state: st, fillDevices, stopDeviceTest, applyDevices, netRefresh };
+  return { init, onShow, state: st, debug: () => V, fillDevices, stopDeviceTest, applyDevices, netRefresh };
 })();

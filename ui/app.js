@@ -91,6 +91,7 @@ const S = {
     theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
     skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
     micId: '', speakerId: '', camId: '', internetMode: false, inviteCode: '',
+    noUpdateCheck: false, skipVersion: '',
     socialServer: '', socialUser: '', socialToken: '', tsApiKey: '', tsAddress: '', noLocalServer: false,
   },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
@@ -222,7 +223,7 @@ function cardHTML(g, i) {
     ? `<i class="dot"></i>${esc(p.name)}${genre ? ' · ' + esc(genre) : ''}`
     : `${esc(p.name)} · Not installed`;
   const cover = a.cover
-    ? `<img class="cover ${loadedCovers.has(g.id) ? 'loaded' : ''}" src="${esc(api.src(a.cover))}" alt="" draggable="false">`
+    ? `<img class="cover ${loadedCovers.has(g.id) ? 'loaded' : ''}" src="${esc(api.src(a.cover))}" alt="" draggable="false" loading="lazy" decoding="async">`
     : '';
   return `<article class="card ${g.installed ? '' : 'missing'} ${S.selected === g.id ? 'sel' : ''}" data-id="${esc(g.id)}" style="--i:${Math.min(i, 26)};--h:${hue(g)}">
     <div class="card-art">
@@ -266,6 +267,8 @@ function applyCover(id) {
   const img = document.createElement('img');
   img.className = 'cover';
   img.draggable = false;
+  img.loading = 'lazy';
+  img.decoding = 'async';
   art.insertBefore(img, $('.glare', art));
   img.src = api.src(a.cover);
 }
@@ -700,9 +703,14 @@ $('#w-close').addEventListener('click', () => api.win.close());
 window.addEventListener('resize', () => { slide($('#seg-install')); slide($('#chips')); });
 
 // ambient spotlight
+let spotRaf = 0;
 window.addEventListener('pointermove', (e) => {
-  document.body.style.setProperty('--mx', `${e.clientX}px`);
-  document.body.style.setProperty('--my', `${e.clientY}px`);
+  if (spotRaf) return;
+  spotRaf = requestAnimationFrame(() => {
+    spotRaf = 0;
+    document.body.style.setProperty('--mx', `${e.clientX}px`);
+    document.body.style.setProperty('--my', `${e.clientY}px`);
+  });
 }, { passive: true });
 
 // keyboard
@@ -747,6 +755,8 @@ function openSettings() {
   $('#set-startup-scan').checked = !S.settings.skipStartupScan;
   $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
   $('#set-local-server').checked = !S.settings.noLocalServer;
+  $('#set-autoupdate').checked = !S.settings.noUpdateCheck;
+  Updater.fillAbout();
   Social.fillDevices();
   Social.netRefresh();
   renderThemeGrid();
@@ -836,6 +846,7 @@ $('#set-save').addEventListener('click', async () => {
   next.steamKey = $('#set-steam').value.trim();
   next.rsiPath = $('#set-rsi').value.trim();
   next.noLocalServer = !$('#set-local-server').checked;
+  next.noUpdateCheck = !$('#set-autoupdate').checked;
   next.micId = $('#dev-mic').value;
   next.speakerId = $('#dev-spk').value;
   next.camId = $('#dev-cam').value;
@@ -1002,6 +1013,88 @@ grid.addEventListener('contextmenu', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#art-modal').classList.contains('on')) closeArt();
 });
+/* ───────────────────────── updates ───────────────────────── */
+
+const Updater = {
+  info: null,
+  busy: false,
+  async fillAbout() {
+    try { $('#about-ver').textContent = `v${await api.invoke('app_version')}`; } catch { $('#about-ver').textContent = ''; }
+  },
+  setStatus(text) { $('#upd-status').textContent = text; },
+  async check(manual) {
+    if (!window.__TAURI__ || this.busy) return;
+    if (manual) this.setStatus('Checking…');
+    try {
+      const info = await api.invoke('check_update');
+      this.info = info;
+      if (info.available) {
+        this.setStatus(`Version ${info.latest} is available`);
+        if (manual || info.latest !== S.settings.skipVersion) this.show(info);
+      } else {
+        this.setStatus(`You have the latest version (v${info.current})`);
+        if (manual) toast(`Nexus is up to date (v${info.current})`);
+      }
+    } catch (e) {
+      this.setStatus(String(e));
+      if (manual) toast(String(e), 'err');
+    }
+  },
+  show(info) {
+    const firstLine = (info.notes || '').split('\n').map((l) => l.replace(/[#*`]/g, '').trim()).find((l) => l) || `You have v${info.current}`;
+    $('#ub-title').textContent = `Nexus ${info.latest} is available`;
+    $('#ub-sub').textContent = firstLine;
+    $('#ub-progress').hidden = true;
+    $('#ub-install .bp-label').textContent = 'INSTALL NOW';
+    $('#ub-install').disabled = false;
+    $('#ub-later').hidden = false;
+    $('#ub-skip').hidden = false;
+    $('#update-bar').hidden = false;
+  },
+  hide() { $('#update-bar').hidden = true; },
+  async install() {
+    if (this.busy) return;
+    this.busy = true;
+    $('#ub-install').disabled = true;
+    $('#ub-install .bp-label').textContent = 'DOWNLOADING…';
+    $('#ub-later').hidden = true;
+    $('#ub-skip').hidden = true;
+    $('#ub-progress').hidden = false;
+    try {
+      await api.invoke('install_update');
+      $('#ub-install .bp-label').textContent = 'RESTARTING…';
+      $('#ub-progress').style.setProperty('--p', '100%');
+    } catch (e) {
+      this.busy = false;
+      toast(String(e), 'err');
+      this.show(this.info);
+    }
+  },
+  init() {
+    $('#ub-install').addEventListener('click', () => this.install());
+    $('#ub-later').addEventListener('click', () => this.hide());
+    $('#ub-skip').addEventListener('click', () => {
+      if (this.info) { S.settings.skipVersion = this.info.latest; saveSettings(); }
+      this.hide();
+    });
+    $('#upd-check').addEventListener('click', () => this.check(true));
+    api.listen('update-progress', (e) => {
+      const { done, total } = e.payload;
+      $('#ub-progress').style.setProperty('--p', `${total ? Math.min(100, (done / total) * 100) : 0}%`);
+      $('#ub-sub').textContent = total ? `${(done / 1e6).toFixed(1)} of ${(total / 1e6).toFixed(1)} MB` : `${(done / 1e6).toFixed(1)} MB`;
+    });
+    // check shortly after startup, then every 6 hours
+    setTimeout(() => { if (!S.settings.noUpdateCheck) this.check(false); }, 8000);
+    setInterval(() => { if (!S.settings.noUpdateCheck && !this.busy) this.check(false); }, 6 * 3600 * 1000);
+  },
+};
+/* ───────────────────────── memory: minimized or hidden ───────────────────────── */
+
+document.addEventListener('visibilitychange', () => {
+  const hidden = document.hidden;
+  document.documentElement.classList.toggle('paused', hidden);
+  if (window.__TAURI__) api.invoke('set_memory_mode', { low: hidden }).catch(() => {});
+});
 /* ───────────────────────── toasts ───────────────────────── */
 
 function toast(msg, kind = '', action) {
@@ -1112,6 +1205,12 @@ async function boot() {
   restorePrefs();
   await api.listen('scan-progress', (e) => { scanChain = scanChain.then(() => onProgress(e.payload)); });
   await api.listen('genres-updated', (e) => onGenres(e.payload));
+  await api.listen('art-optimized', (e) => {
+    S.art = e.payload || S.art;
+    loadedCovers.clear();
+    renderGrid(true);
+    renderHero();
+  });
 
   progress(34, 'Loading library');
   const b = await api.invoke('bootstrap');
@@ -1125,6 +1224,7 @@ async function boot() {
   setGames(b.library || []);
   progress(66, 'Preparing games');
   Social.init();
+  Updater.init();
   refresh(true);
   renderHero();
 
@@ -1200,6 +1300,8 @@ function makeMock() {
         case 'fetch_extras': return {};
         case 'test_sgdb_key': return 'Key works (mock)';
         case 'clear_art_cache': return 0;
+        case 'app_version': return '0.0.0';
+        case 'check_update': return { available: false, current: '0.0.0', latest: '0.0.0', notes: '' };
         case 'server_status': return { running: true, address: '127.0.0.1:7777', hasBinary: true, internet: false };
         case 'list_art_options': return [];
         case 'set_art': return {};

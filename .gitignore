@@ -7,3 +7,5 @@ nexus-data/
 server/nexus-data/
 release/
 *.zip
+installer/payload/
+installer/target/

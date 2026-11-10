@@ -1,7 +1,7 @@
 ﻿name: Release
 
-# Pushing a tag like v0.2.0 builds the launcher and the server on Windows,
-# zips them and publishes a GitHub release with the zip attached.
+# Pushing a tag like v0.3.0 builds launcher, server and installer on Windows and publishes a GitHub release.
+# Installed copies of Nexus look at the latest release (Nexus-Setup-*.exe + SHA256SUMS.txt) and offer the update in the app.
 on:
   push:
     tags: ['v*']
@@ -23,46 +23,57 @@ jobs:
           workspaces: |
             src-tauri
             server
+            installer
 
-      - name: Build launcher
-        run: cargo build --release --manifest-path src-tauri/Cargo.toml
-
-      - name: Build server
-        run: cargo build --release --manifest-path server/Cargo.toml
-
-      - name: Package zip
+      - name: Versions must match the tag
+        if: github.ref_type == 'tag'
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          if (-not $tag.StartsWith('v')) { $tag = 'dev' }
-          $dir = "Nexus-$tag-windows-x64"
-          New-Item -ItemType Directory $dir | Out-Null
-          Copy-Item src-tauri/target/release/nexus.exe $dir
-          Copy-Item server/target/release/nexus-server.exe $dir
-          Copy-Item README.md $dir
-          Compress-Archive -Path $dir -DestinationPath "$dir.zip"
-          "ZIP=$dir.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          foreach ($f in 'src-tauri/Cargo.toml', 'server/Cargo.toml', 'installer/Cargo.toml') {
+            $v = (Select-String -Path $f -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+            if ($v -ne $tag) { throw "$f has version $v but the tag is v$tag" }
+          }
 
-      - name: Upload artifact (manual runs)
+      - name: Build installer (builds launcher and server first)
+        shell: pwsh
+        run: ./installer/build.ps1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem release -Filter 'Nexus-Setup-v*.exe').FullName
+          $ver = [IO.Path]::GetFileNameWithoutExtension($setup) -replace '^Nexus-Setup-', ''
+          $zipDir = "Nexus-$ver-windows-x64"
+          New-Item -ItemType Directory $zipDir | Out-Null
+          Copy-Item src-tauri/target/release/nexus.exe, server/target/release/nexus-server.exe, README.md $zipDir
+          Compress-Archive -Path $zipDir -DestinationPath "release/$zipDir.zip"
+          Copy-Item src-tauri/target/release/nexus.exe release/nexus.exe
+          Copy-Item server/target/release/nexus-server.exe release/nexus-server.exe
+          # checksums: the in-app updater verifies the installer against this file
+          Get-ChildItem release -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content release/SHA256SUMS.txt -Encoding ascii
+          Get-Content release/SHA256SUMS.txt
+
+      - name: Upload artifacts (manual runs)
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: nexus-windows
-          path: ${{ env.ZIP }}
+          path: release/*
 
       - name: Publish release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ env.ZIP }}
-            src-tauri/target/release/nexus.exe
-            server/target/release/nexus-server.exe
+          files: release/*
           generate_release_notes: true
           body: |
             **Nexus** – all-in-one game launcher for Windows.
 
-            **Install:** download the zip (or `nexus.exe` + `nexus-server.exe` separately), keep both files in the same folder and start `nexus.exe`.
-            The chat & call server starts together with the launcher. Needs the Microsoft WebView2 runtime (already part of Windows 10/11).
+            **Install:** run `Nexus-Setup-*.exe` (no admin rights needed). Installed copies update themselves: Nexus tells you when a new version is out and installs it with one click.
+            Prefer no installer? Use the zip (or `nexus.exe` + `nexus-server.exe`, kept in the same folder).
 
             The executables are not code-signed, so Windows SmartScreen may warn: *More info → Run anyway*.
+            Needs the Microsoft WebView2 runtime (already part of Windows 10/11).

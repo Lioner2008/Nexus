@@ -4,6 +4,7 @@ mod art;
 mod genres;
 mod scan;
 mod ts;
+mod update;
 mod vdf;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -71,6 +72,9 @@ pub struct Settings {
     // internet mode: server reachable from other networks (UPnP + TURN relay + invite code)
     pub internet_mode: bool,
     pub invite_code: String,
+    // updates: do not check automatically / version the user chose to skip
+    pub no_update_check: bool,
+    pub skip_version: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -107,6 +111,7 @@ pub struct AppState {
     pub enriching: AtomicBool,
     pub io_lock: Mutex<()>,
     pub ts: tokio::sync::Mutex<Option<ts::TsConn>>,
+    pub update: tokio::sync::Mutex<Option<update::UpdateInfo>>,
 }
 
 impl AppState {
@@ -682,11 +687,78 @@ async fn ts_send_text(state: State<'_, AppState>, cid: i64, msg: String) -> Resu
 }
 
 // ───────────────────────────── entry point ─────────────────────────────
+// ───────────────────────────── updates ─────────────────────────────
+
+#[tauri::command]
+fn app_version() -> String {
+    update::CURRENT.to_string()
+}
+
+#[tauri::command]
+async fn check_update(state: State<'_, AppState>) -> Result<update::UpdateInfo, String> {
+    let info = update::check(&state.http).await?;
+    *state.update.lock().await = Some(info.clone());
+    Ok(info)
+}
+
+/// Downloads and starts the installer, then quits so the installer can replace the files.
+#[tauri::command]
+async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let info = match state.update.lock().await.clone() {
+        Some(i) if i.available => i,
+        _ => update::check(&state.http).await?,
+    };
+    if !info.available {
+        return Err("Nexus is already up to date".into());
+    }
+    update::download_and_run(&app, &state.http, &info).await?;
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        a.exit(0);
+    });
+    Ok(())
+}
+/// Asks the web view to trim its memory while Nexus is minimized or hidden (e.g. during a game)
+/// and to go back to normal when it is shown again.
+#[cfg(windows)]
+#[tauri::command]
+fn set_memory_mode(app: AppHandle, low: bool) -> Result<(), String> {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows::core::Interface;
+    let win = app.get_webview_window("main").ok_or("window not found")?;
+    win.with_webview(move |wv| unsafe {
+        if let Ok(core) = wv.controller().CoreWebView2() {
+            if let Ok(c) = core.cast::<ICoreWebView2_19>() {
+                let level = if low {
+                    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+                } else {
+                    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+                };
+                let _ = c.SetMemoryUsageTargetLevel(level);
+            }
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+fn set_memory_mode(_low: bool) -> Result<(), String> {
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let dir = app.path().app_data_dir()?;
+            // NEXUS_DATA_DIR: developer override (tests run against a separate data folder)
+            let dir = match std::env::var_os("NEXUS_DATA_DIR") {
+                Some(d) => PathBuf::from(d),
+                None => app.path().app_data_dir()?,
+            };
             std::fs::create_dir_all(&dir).ok();
             let settings: Settings = read_json(dir.join("settings.json"));
             let cache: Cache = read_json(dir.join("cache.json"));
@@ -702,7 +774,24 @@ fn main() {
                 enriching: AtomicBool::new(false),
                 io_lock: Mutex::new(()),
                 ts: tokio::sync::Mutex::new(None),
+                update: tokio::sync::Mutex::new(None),
             });
+            // shrink artwork downloaded by older versions (big PNGs) in the background
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let h2 = h.clone();
+                    let res = tauri::async_runtime::spawn_blocking(move || {
+                        let st = h2.state::<AppState>();
+                        art::migrate_existing(&st)
+                    })
+                    .await;
+                    if let Ok(Some(map)) = res {
+                        let _ = h.emit("art-optimized", map);
+                    }
+                });
+            }
             // start the local social server in the background unless the user switched that off
             let (auto, internet, invite) = {
                 let st = app.state::<AppState>();
@@ -736,6 +825,10 @@ fn main() {
             start_local_server,
             stop_local_server,
             set_internet_mode,
+            app_version,
+            set_memory_mode,
+            check_update,
+            install_update,
             ts_connect,
             ts_disconnect,
             ts_connected,

@@ -1,6 +1,6 @@
 [package]
 name = "nexus"
-version = "0.2.0"
+version = "0.3.0"
 description = "Nexus - all-in-one game launcher"
 edition = "2021"
 
@@ -15,10 +15,16 @@ tokio = { version = "1", features = ["time", "sync", "net", "io-util", "rt", "ma
 reqwest = { version = "0.12", features = ["json"] }
 urlencoding = "2"
 rand = "0.8"
+sha2 = "0.10"
 tauri-plugin-dialog = "2"
+# covers and banners are shrunk when they are downloaded: far less memory in the web view
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+# lets the web view release memory while the window is hidden or minimized
+webview2-com = "0.39"
+windows = "0.62"
 
 [features]
 default = ["custom-protocol"]
@@ -26,3 +32,7 @@ custom-protocol = ["tauri/custom-protocol"]
 
 [profile.release]
 strip = true
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"

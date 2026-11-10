@@ -27,6 +27,13 @@
 </div>
 <!-- window chrome -->
 <div class="dragbar" data-tauri-drag-region></div>
+<div class="update-bar" id="update-bar" hidden>
+  <div class="ub-text"><b id="ub-title">Update available</b><small id="ub-sub"></small></div>
+  <div class="ub-progress" id="ub-progress" hidden><i></i></div>
+  <button class="btn-primary sm" id="ub-install"><span class="bp-fill"></span><span class="bp-label">INSTALL NOW</span></button>
+  <button class="btn-ghost sm" id="ub-later">Later</button>
+  <button class="ub-skip" id="ub-skip" title="Do not remind me about this version">Skip</button>
+</div>
 <div class="winctl">
   <button id="w-min" aria-label="Minimize"><svg viewBox="0 0 12 12"><path d="M2 6h8"/></svg></button>
   <button id="w-max" aria-label="Maximize"><svg viewBox="0 0 12 12"><rect x="2.5" y="2.5" width="7" height="7" rx="1"/></svg></button>
@@ -204,6 +211,7 @@
           <section class="soc-main">
             <div class="soc-call" id="soc-call" hidden>
               <div class="soc-call-head"><b id="call-title"></b><small id="call-sub"></small></div>
+              <div class="call-warn" id="call-warn" hidden><span>No microphone – the others cannot hear you.</span><button class="btn-ghost sm" id="call-retry">Retry</button></div>
               <div class="vgrid" id="vgrid"></div>
               <div class="vbar" id="vbar"></div>
             </div>
@@ -317,6 +325,16 @@
       <small>Needs "Game details" set to public in your Steam privacy settings.</small>
     </label>
 
+    <div class="sec-title">About &amp; updates</div>
+    <div class="setrow">
+      <div><b>Nexus <span id="about-ver"></span></b><small id="upd-status">Updates come from GitHub and install with one click</small></div>
+      <button class="btn-ghost sm" id="upd-check">Check for updates</button>
+    </div>
+    <div class="setrow">
+      <div><b>Check for updates automatically</b><small>At startup and every few hours</small></div>
+      <label class="switch"><input type="checkbox" id="set-autoupdate"><i></i></label>
+    </div>
+
     <div class="sec-title">Data</div>
     <div class="data-actions">
       <button class="btn-ghost" id="set-clear-art">Clear artwork cache</button>
@@ -351,6 +369,7 @@
     <div class="art-grid" id="art-grid"></div>
   </div>
 </div>
+<div id="soc-audio" hidden></div>
 <div id="soc-rings"></div>
 <div id="toasts"></div>
 <script src="social.js"></script>
