@@ -44,6 +44,16 @@ pub struct Settings {
     pub steam_key: String,
     pub favorites: Vec<String>,
     pub last_played: HashMap<String, u64>,
+    // appearance
+    pub theme: String,
+    pub accent: String,
+    pub bg_tone: String,
+    pub no_motion: bool,
+    // behaviour
+    pub skip_startup_scan: bool,
+    pub minimize_on_launch: bool,
+    // extra Star Citizen / RSI Launcher library folder
+    pub rsi_path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -180,8 +190,11 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) {
 
 #[tauri::command]
 async fn scan_library(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Game>, String> {
-    let steam_key = state.settings.lock().unwrap().steam_key.clone();
-    let games = scan::scan_all(&app, &state.http, &steam_key).await;
+    let (steam_key, rsi_path) = {
+        let s = state.settings.lock().unwrap();
+        (s.steam_key.clone(), s.rsi_path.clone())
+    };
+    let games = scan::scan_all(&app, &state.http, &steam_key, &rsi_path).await;
     state.cache.lock().unwrap().library = games.clone();
     state.save_cache();
     Ok(games)
@@ -226,6 +239,27 @@ fn open_folder(path: String) -> Result<(), String> {
         .spawn()
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// Deletes all downloaded artwork; it is fetched again on demand.
+#[tauri::command]
+fn clear_art_cache(state: State<'_, AppState>) -> usize {
+    let n = std::fs::read_dir(state.dir.join("art"))
+        .map(|d| d.count())
+        .unwrap_or(0);
+    let _ = std::fs::remove_dir_all(state.dir.join("art"));
+    {
+        let mut c = state.cache.lock().unwrap();
+        c.art.clear();
+        c.sgdb_ids.clear();
+    }
+    state.save_cache();
+    n
+}
+
+#[tauri::command]
+fn open_data_folder(state: State<'_, AppState>) -> Result<(), String> {
+    open_folder(state.dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -287,6 +321,16 @@ async fn run_enrich(app: &AppHandle, st: &AppState) {
     todo.sort_by_key(|g| !g.installed);
 
     for (n, g) in todo.iter().enumerate() {
+        // Star Citizen is not on Steam: use fixed genres instead of a store lookup.
+        if g.platform == "rsi" {
+            let list: Vec<String> = ["Simulation", "Action", "MMO"].map(String::from).to_vec();
+            st.cache.lock().unwrap().genres.insert(g.id.clone(), list.clone());
+            let _ = app.emit(
+                "genres-updated",
+                serde_json::json!({ "id": g.id, "genres": list }),
+            );
+            continue;
+        }
         match genres::lookup(&st.http, &g.name, g.steam_appid).await {
             Ok(Some(list)) => {
                 st.cache
@@ -347,6 +391,8 @@ fn main() {
             install_game,
             open_folder,
             open_url,
+            clear_art_cache,
+            open_data_folder,
             fetch_cover,
             fetch_extras,
             test_sgdb_key,

@@ -39,7 +39,12 @@ async fn run(app: &AppHandle, platform: &'static str, f: fn() -> Vec<Game>) -> V
 }
 
 /// Scans all launchers one after another and reports progress to the UI.
-pub async fn scan_all(app: &AppHandle, http: &reqwest::Client, steam_key: &str) -> Vec<Game> {
+pub async fn scan_all(
+    app: &AppHandle,
+    http: &reqwest::Client,
+    steam_key: &str,
+    rsi_path: &str,
+) -> Vec<Game> {
     let mut all: Vec<Game> = Vec::new();
 
     // Steam: installed games from the manifests + (optional) whole library via Web API
@@ -64,6 +69,14 @@ pub async fn scan_all(app: &AppHandle, http: &reqwest::Client, steam_key: &str) 
     all.extend(run(app, "ubisoft", ubisoft).await);
     all.extend(run(app, "ea", ea).await);
     all.extend(run(app, "battlenet", battlenet).await);
+
+    emit(app, "rsi", "running", 0);
+    let extra = rsi_path.to_string();
+    let rsi_games = tauri::async_runtime::spawn_blocking(move || rsi(&extra))
+        .await
+        .unwrap_or_default();
+    emit(app, "rsi", "done", rsi_games.len());
+    all.extend(rsi_games);
 
     let mut seen = std::collections::HashSet::new();
     all.retain(|g| seen.insert(g.id.clone()));
@@ -465,4 +478,135 @@ fn battlenet() -> Vec<Game> {
 #[cfg(not(windows))]
 fn battlenet() -> Vec<Game> {
     Vec::new()
+}
+
+// ───────────────────────────── RSI Launcher (Star Citizen) ─────────────────────────────
+
+/// Finds "RSI Launcher.exe": default install paths first, then the uninstall record.
+fn rsi_launcher_exe() -> Option<PathBuf> {
+    let mut cands: Vec<PathBuf> = Vec::new();
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(pf) = std::env::var(var) {
+            cands.push(
+                PathBuf::from(pf)
+                    .join("Roberts Space Industries")
+                    .join("RSI Launcher")
+                    .join("RSI Launcher.exe"),
+            );
+        }
+    }
+    if let Ok(la) = std::env::var("LOCALAPPDATA") {
+        cands.push(
+            PathBuf::from(la)
+                .join("Programs")
+                .join("rsi-launcher")
+                .join("RSI Launcher.exe"),
+        );
+    }
+    if let Some(p) = rsi_launcher_from_registry() {
+        cands.push(p);
+    }
+    cands.into_iter().find(|p| p.exists())
+}
+
+#[cfg(windows)]
+fn rsi_launcher_from_registry() -> Option<PathBuf> {
+    use winreg::{enums::*, RegKey};
+    const KEY: &str = r"Microsoft\Windows\CurrentVersion\Uninstall\81bfc699-f883-50c7-b674-2483b6baae23";
+    for (hive, base) in [
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE"),
+        (HKEY_CURRENT_USER, r"SOFTWARE"),
+    ] {
+        let Ok(k) = RegKey::predef(hive).open_subkey(format!(r"{base}\{KEY}")) else {
+            continue;
+        };
+        let un: String = k.get_value("UninstallString").unwrap_or_default();
+        // "C:\...\Uninstall RSI Launcher.exe" /allusers  → take the quoted path
+        let path = un.trim().trim_start_matches('"').split('"').next().unwrap_or("");
+        if let Some(dir) = Path::new(path).parent() {
+            return Some(dir.join("RSI Launcher.exe"));
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn rsi_launcher_from_registry() -> Option<PathBuf> {
+    None
+}
+
+/// Star Citizen channels (LIVE, PTU, EPTU, …) installed through the RSI Launcher.
+/// `extra` is an optional user-provided folder (library root, StarCitizen or a channel folder).
+fn rsi(extra: &str) -> Vec<Game> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut add = |p: PathBuf| {
+        if !roots.contains(&p) {
+            roots.push(p);
+        }
+    };
+
+    let extra = extra.trim();
+    if !extra.is_empty() {
+        let p = PathBuf::from(extra);
+        add(p.join("StarCitizen"));
+        add(p.clone());
+        if let Some(parent) = p.parent() {
+            add(parent.to_path_buf()); // the user pointed at a channel folder itself
+        }
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(pf) = std::env::var(var) {
+            add(PathBuf::from(pf)
+                .join("Roberts Space Industries")
+                .join("StarCitizen"));
+        }
+    }
+    for drive in 'C'..='Z' {
+        for rel in [
+            r"Roberts Space Industries\StarCitizen",
+            r"Program Files\Roberts Space Industries\StarCitizen",
+            r"Games\Roberts Space Industries\StarCitizen",
+            r"Games\StarCitizen",
+            r"StarCitizen",
+        ] {
+            add(PathBuf::from(format!(r"{drive}:\{rel}")));
+        }
+    }
+
+    let launcher = rsi_launcher_exe();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for root in roots {
+        let Ok(rd) = fs::read_dir(&root) else { continue };
+        for e in rd.flatten() {
+            let dir = e.path();
+            let game_exe = dir.join("Bin64").join("StarCitizen.exe");
+            if !game_exe.exists() {
+                continue;
+            }
+            let channel = e.file_name().to_string_lossy().to_string();
+            if !seen.insert(dir.to_string_lossy().to_lowercase()) {
+                continue;
+            }
+            let name = if channel.eq_ignore_ascii_case("LIVE") {
+                "Star Citizen".to_string()
+            } else {
+                format!("Star Citizen ({})", channel.to_uppercase())
+            };
+            // Starting through the RSI Launcher keeps login/patching working.
+            let exe = launcher.clone().unwrap_or(game_exe);
+            out.push(Game {
+                id: format!("rsi:{}", channel.to_uppercase()),
+                name,
+                platform: "rsi".into(),
+                installed: true,
+                install_path: Some(dir.to_string_lossy().to_string()),
+                exe: Some(exe.to_string_lossy().to_string()),
+                size_bytes: fs::metadata(dir.join("Data.p4k")).ok().map(|m| m.len()),
+                ..Default::default()
+            });
+        }
+    }
+    out
 }

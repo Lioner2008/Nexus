@@ -17,7 +17,46 @@ const PLATFORMS = {
   ubisoft:   { name: 'Ubisoft Connect', short: 'UB', color: '#4aa8ff', hint: 'Registry · Ubisoft\\Launcher\\Installs' },
   ea:        { name: 'EA app',          short: 'EA', color: '#ff6a5a', hint: 'Program Files\\EA Games' },
   battlenet: { name: 'Battle.net',      short: 'BN', color: '#3d9cff', hint: 'Registry · Blizzard Entertainment' },
+  rsi:       { name: 'RSI Launcher',    short: 'RS', color: '#5ec8ff', hint: 'Roberts Space Industries\\StarCitizen\\LIVE' },
 };
+
+/* ───────────────────────── themes ───────────────────────── */
+
+const THEMES = {
+  neon:   { name: 'Neon',   acc: [200, 255, 46],  ink: '#0a0f03' },
+  cyan:   { name: 'Cyan',   acc: [34, 211, 238],  ink: '#021014' },
+  ember:  { name: 'Ember',  acc: [255, 138, 43],  ink: '#140800' },
+  violet: { name: 'Violet', acc: [167, 139, 250], ink: '#0d0720' },
+  rose:   { name: 'Rose',   acc: [255, 77, 125],  ink: '#17020a' },
+  mono:   { name: 'Mono',   acc: [236, 239, 243], ink: '#0b0d10' },
+};
+const TONES = {
+  black:    { bg: [7, 9, 11],   bg2: [11, 15, 19], panel: [16, 21, 26], panel2: [22, 29, 36], line: [30, 38, 46], line2: [43, 54, 64] },
+  slate:    { bg: [15, 17, 21], bg2: [19, 22, 27], panel: [25, 28, 34], panel2: [32, 36, 43], line: [40, 45, 53], line2: [55, 62, 72] },
+  midnight: { bg: [6, 9, 20],   bg2: [10, 14, 28], panel: [15, 20, 38], panel2: [21, 27, 50], line: [30, 38, 66], line2: [44, 54, 90] },
+};
+const toHex = (c) => `#${c.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+function hexToRgb(h) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(h || '');
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function applyTheme(s) {
+  const root = document.documentElement;
+  const custom = s.theme === 'custom' ? hexToRgb(s.accent) : null;
+  const t = THEMES[s.theme] || THEMES.neon;
+  const acc = custom || t.acc;
+  const ink = custom ? (0.299 * acc[0] + 0.587 * acc[1] + 0.114 * acc[2] > 150 ? '#0a0d10' : '#ffffff') : t.ink;
+  const tone = TONES[s.bgTone] || TONES.black;
+  root.style.setProperty('--acc-rgb', acc.join(' '));
+  root.style.setProperty('--acc-ink', ink);
+  root.style.setProperty('--bg-rgb', tone.bg.join(' '));
+  for (const k of ['bg', 'bg2', 'panel', 'panel2', 'line', 'line2']) root.style.setProperty(`--${k}`, toHex(tone[k]));
+  root.classList.toggle('no-motion', !!s.noMotion);
+}
+// apply the last used theme immediately, before the backend has answered
+try { applyTheme(JSON.parse(store.get('themeCache', '{}'))); } catch { /* defaults */ }
 
 const IC = {
   play: '<svg viewBox="0 0 24 24"><path d="M7 4.5v15a1 1 0 0 0 1.5.9l12-7.5a1 1 0 0 0 0-1.8l-12-7.5A1 1 0 0 0 7 4.5z"/></svg>',
@@ -38,7 +77,11 @@ const api = T
 
 const S = {
   games: [], byId: new Map(), art: {}, genres: {},
-  settings: { sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {} },
+  settings: {
+    sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {},
+    theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
+    skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
+  },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
   selected: null, scanning: false,
 };
@@ -403,6 +446,7 @@ async function play(g) {
       toast(`Launching ${g.name}…`);
       renderNav();
       if (S.selected === g.id) renderHero();
+      if (S.settings.minimizeOnLaunch) setTimeout(() => api.win.minimize(), 900);
     } catch (e) { toast(String(e), 'err'); }
   } else if (g.installUri) {
     try {
@@ -661,9 +705,32 @@ document.addEventListener('click', (e) => {
 /* ───────────────────────── settings ───────────────────────── */
 
 const settingsEl = $('#settings');
+const THEME_KEYS = ['theme', 'accent', 'bgTone', 'noMotion', 'skipStartupScan', 'minimizeOnLaunch'];
+let draft = {};
+
+function renderThemeGrid() {
+  const cur = draft.theme || 'neon';
+  const accent = draft.accent || '#c8ff2e';
+  $('#theme-grid').innerHTML =
+    Object.entries(THEMES).map(([id, t]) =>
+      `<button class="theme ${cur === id ? 'on' : ''}" data-theme="${id}" style="--sw:${toHex(t.acc)}"><i></i>${t.name}</button>`).join('') +
+    `<label class="theme custom ${cur === 'custom' ? 'on' : ''}" style="--sw:${accent}"><i></i>Custom<input type="color" value="${accent}" aria-label="Custom accent color"></label>`;
+}
+
+function syncBgTone() {
+  $$('#bg-tone button').forEach((b) => b.classList.toggle('on', b.dataset.v === (draft.bgTone || 'black')));
+}
+
 function openSettings() {
+  draft = { ...S.settings };
   $('#set-sgdb').value = S.settings.sgdbKey;
   $('#set-steam').value = S.settings.steamKey;
+  $('#set-rsi').value = S.settings.rsiPath || '';
+  $('#set-motion').checked = !S.settings.noMotion;
+  $('#set-startup-scan').checked = !S.settings.skipStartupScan;
+  $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
+  renderThemeGrid();
+  syncBgTone();
   const m = $('#set-sgdb-msg');
   m.className = '';
   m.textContent = 'Free – log in on steamgriddb.com, open Preferences → API.';
@@ -671,12 +738,40 @@ function openSettings() {
   settingsEl.setAttribute('aria-hidden', 'false');
 }
 function closeSettings() {
+  applyTheme(S.settings); // drop an unsaved theme preview
   settingsEl.classList.remove('on');
   settingsEl.setAttribute('aria-hidden', 'true');
 }
 $('#btn-settings').addEventListener('click', openSettings);
 $('#set-close').addEventListener('click', closeSettings);
 settingsEl.addEventListener('mousedown', (e) => { if (e.target === settingsEl) closeSettings(); });
+
+// live preview while the dialog is open
+$('#theme-grid').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-theme]');
+  if (!b) return;
+  draft.theme = b.dataset.theme;
+  applyTheme(draft);
+  renderThemeGrid();
+});
+$('#theme-grid').addEventListener('input', (e) => {
+  if (e.target.type !== 'color') return;
+  draft.theme = 'custom';
+  draft.accent = e.target.value;
+  applyTheme(draft);
+  $$('#theme-grid .theme').forEach((x) => x.classList.toggle('on', x.classList.contains('custom')));
+  $('#theme-grid .custom').style.setProperty('--sw', e.target.value);
+});
+$('#bg-tone').addEventListener('click', (e) => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  draft.bgTone = b.dataset.v;
+  applyTheme(draft);
+  syncBgTone();
+});
+$('#set-motion').addEventListener('change', (e) => { draft.noMotion = !e.target.checked; applyTheme(draft); });
+$('#set-startup-scan').addEventListener('change', (e) => { draft.skipStartupScan = !e.target.checked; });
+$('#set-minimize').addEventListener('change', (e) => { draft.minimizeOnLaunch = e.target.checked; });
 
 $('#set-test').addEventListener('click', async () => {
   const m = $('#set-sgdb-msg');
@@ -688,23 +783,40 @@ $('#set-test').addEventListener('click', async () => {
   } catch (e) { m.textContent = String(e); m.className = 'err'; }
 });
 
+$('#set-clear-art').addEventListener('click', async () => {
+  const n = await api.invoke('clear_art_cache');
+  S.art = {};
+  artQ.length = 0;
+  artPending.clear();
+  heroKey = '';
+  renderGrid(true);
+  renderHero();
+  updateArtRow();
+  toast(`Artwork cache cleared (${n} files). Covers reload as you scroll.`);
+});
+$('#set-open-data').addEventListener('click', () => api.invoke('open_data_folder').catch((e) => toast(String(e), 'err')));
+
 $('#set-save').addEventListener('click', async () => {
-  const oldSteam = S.settings.steamKey;
-  const oldSg = S.settings.sgdbKey;
-  S.settings.sgdbKey = $('#set-sgdb').value.trim();
-  S.settings.steamKey = $('#set-steam').value.trim();
-  await api.invoke('save_settings', { settings: S.settings });
+  const old = { ...S.settings };
+  const next = { ...S.settings };
+  for (const k of THEME_KEYS) next[k] = draft[k];
+  next.sgdbKey = $('#set-sgdb').value.trim();
+  next.steamKey = $('#set-steam').value.trim();
+  next.rsiPath = $('#set-rsi').value.trim();
+  S.settings = next;
+  store.set('themeCache', JSON.stringify({ theme: next.theme, accent: next.accent, bgTone: next.bgTone, noMotion: next.noMotion }));
+  applyTheme(next);
+  await api.invoke('save_settings', { settings: next });
   closeSettings();
   toast('Settings saved');
-  if (S.settings.steamKey !== oldSteam) { runScan(true); return; }
-  if (S.settings.sgdbKey !== oldSg) {
+  if (next.steamKey !== old.steamKey || next.rsiPath !== old.rsiPath) { runScan(true); return; }
+  if (next.sgdbKey !== old.sgdbKey) {
     artDead = false;
     sortGames(S.games).forEach((g) => enqueueArt(g.id, false));
     ensureExtras(S.selected);
     updateArtRow();
   }
 });
-
 /* ───────────────────────── toasts ───────────────────────── */
 
 function toast(msg, kind = '', action) {
@@ -743,6 +855,9 @@ async function boot() {
 
   const b = await api.invoke('bootstrap');
   S.settings = { ...S.settings, ...b.settings };
+  if (!S.settings.theme) S.settings.theme = 'neon';
+  if (!S.settings.bgTone) S.settings.bgTone = 'black';
+  applyTheme(S.settings);
   favSet = new Set(S.settings.favorites || []);
   S.art = b.art || {};
   S.genres = b.genres || {};
@@ -757,7 +872,10 @@ async function boot() {
   $('#splash').classList.add('out');
   slide($('#seg-install'));
   slide($('#chips'));
-  runScan(!hasLibrary);
+  if (hasLibrary && S.settings.skipStartupScan) {
+    api.invoke('start_enrich');
+    sortGames(S.games).forEach((g) => enqueueArt(g.id, false));
+  } else runScan(!hasLibrary);
 
   if (!S.settings.sgdbKey) {
     setTimeout(() => toast('Add a free SteamGridDB key to load cover art', '', { label: 'Open settings', fn: openSettings }), 2600);
@@ -781,6 +899,7 @@ function makeMock() {
     ['Cinder Vale', 'ea', 1, ['Adventure']], ['Night Courier', 'steam', 1, ['Indie']],
     ['Gravity Well', 'steam', 0, ['Simulation']], ['Static Bloom', 'epic', 1, ['Indie', 'Adventure']],
     ['Rust Kingdom', 'steam', 1, ['Strategy', 'RPG']], ['Skyline Rush', 'ubisoft', 0, ['Racing']],
+    ['Star Citizen', 'rsi', 1, ['Simulation', 'Action', 'MMO']],
   ];
   const games = demo.map(([name, platform, inst], i) => ({
     id: `${platform}:${i}`, name, platform, installed: !!inst, installPath: `C:\\Games\\${name}`,
@@ -809,6 +928,8 @@ function makeMock() {
         case 'fetch_cover': return null;
         case 'fetch_extras': return {};
         case 'test_sgdb_key': return 'Key works (mock)';
+        case 'clear_art_cache': return 0;
+        case 'open_data_folder': return null;
         default: return null;
       }
     },

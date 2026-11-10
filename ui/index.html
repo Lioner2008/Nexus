@@ -158,17 +158,51 @@
       <button class="icon-btn" id="set-close" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
 
+    <div class="sec-title">Appearance</div>
+    <div class="themes" id="theme-grid"></div>
+    <div class="setrow">
+      <div><b>Background</b><small>Tone of the dark surfaces</small></div>
+      <div class="seg2" id="bg-tone">
+        <button data-v="black">Black</button><button data-v="slate">Slate</button><button data-v="midnight">Midnight</button>
+      </div>
+    </div>
+    <div class="setrow">
+      <div><b>Animations</b><small>Card tilt, transitions and glow effects</small></div>
+      <label class="switch"><input type="checkbox" id="set-motion"><i></i></label>
+    </div>
+
+    <div class="sec-title">Library</div>
+    <div class="setrow">
+      <div><b>Scan on startup</b><small>Look for new and removed games every time Nexus opens</small></div>
+      <label class="switch"><input type="checkbox" id="set-startup-scan"><i></i></label>
+    </div>
+    <div class="setrow">
+      <div><b>Minimize when a game starts</b><small>Gets Nexus out of the way while you play</small></div>
+      <label class="switch"><input type="checkbox" id="set-minimize"><i></i></label>
+    </div>
+    <label class="field" style="margin-top:12px">
+      <span>Star Citizen / RSI Launcher folder <em style="font-style:normal;color:var(--dim);font-weight:400">optional</em></span>
+      <input id="set-rsi" type="text" placeholder="Detected automatically – set only for a custom library folder" autocomplete="off" spellcheck="false">
+      <small>The folder that contains StarCitizen\LIVE, e.g. D:\Games\Roberts Space Industries</small>
+    </label>
+
+    <div class="sec-title">Accounts &amp; artwork</div>
     <label class="field">
       <span>SteamGridDB API key <a href="https://www.steamgriddb.com/profile/preferences/api" data-ext>get a key</a></span>
       <input id="set-sgdb" type="password" placeholder="Covers, heroes, logos and icons" autocomplete="off" spellcheck="false">
       <small id="set-sgdb-msg">Free – log in on steamgriddb.com, open Preferences → API.</small>
     </label>
-
     <label class="field">
       <span>Steam Web API key <a href="https://steamcommunity.com/dev/apikey" data-ext>get a key</a></span>
       <input id="set-steam" type="password" placeholder="Optional – shows your not-installed Steam games" autocomplete="off" spellcheck="false">
       <small>Needs "Game details" set to public in your Steam privacy settings.</small>
     </label>
+
+    <div class="sec-title">Data</div>
+    <div class="data-actions">
+      <button class="btn-ghost" id="set-clear-art">Clear artwork cache</button>
+      <button class="btn-ghost" id="set-open-data">Open data folder</button>
+    </div>
 
     <div class="modal-foot">
       <button class="btn-ghost" id="set-test">Test SteamGridDB key</button>
@@ -177,7 +211,6 @@
     </div>
   </div>
 </div>
-
 <div id="toasts"></div>
 <script src="app.js"></script>
 </body>
