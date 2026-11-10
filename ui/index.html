@@ -214,12 +214,14 @@
               <div class="call-warn" id="call-warn" hidden><span>No microphone – the others cannot hear you.</span><button class="btn-ghost sm" id="call-retry">Retry</button></div>
               <div class="vgrid" id="vgrid"></div>
               <div class="vbar" id="vbar"></div>
+              <div class="sfx-panel" id="sfx-panel" hidden></div>
             </div>
             <div class="soc-chat">
               <div class="soc-chat-head"><b id="chat-title">#general</b><small id="chat-topic"></small></div>
               <div class="msgs" id="msgs"></div>
               <div class="typing" id="typing"></div>
               <form class="composer" id="composer">
+                <div class="mention-pop" id="mention-pop" hidden></div>
                 <textarea id="chat-input" rows="1" placeholder="Message" maxlength="4000"></textarea>
                 <button class="btn-primary sm" type="submit"><span class="bp-fill"></span><span class="bp-label">SEND</span></button>
               </form>
@@ -305,6 +307,16 @@
       <div class="dev-meter" id="dev-meter" hidden><i></i></div>
       <video class="dev-preview" id="dev-preview" autoplay playsinline muted hidden></video>
       <small class="dev-msg" id="dev-msg"></small>
+    </div>
+
+    <div class="sec-title">Calls</div>
+    <div class="setrow">
+      <div><b>Call sounds</b><small>A short sound when someone joins or leaves, you mute, or you are mentioned</small></div>
+      <label class="switch"><input type="checkbox" id="set-callsounds"><i></i></label>
+    </div>
+    <div class="setrow">
+      <div><b>Watch streams automatically</b><small>Off: you decide per stream with the "Watch stream" button (saves bandwidth)</small></div>
+      <label class="switch"><input type="checkbox" id="set-autowatch"><i></i></label>
     </div>
 
     <div class="sec-title">Play with friends over the internet</div>

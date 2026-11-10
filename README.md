@@ -34,6 +34,13 @@ cargo build --release
 node tests/e2e.mjs http://127.0.0.1:7777     # smoke test against a running server (use a throw-away data dir)
 ```
 
+### In a call
+
+- **Camera and screen at the same time**: every person has a camera tile and, while sharing, a second tile for the screen. Nobody receives a screen they don't watch: use *Watch stream / stop watching* on the tile (or switch *Watch streams automatically* off in the settings).
+- **Volume per person** (0–200 %, remembered by name): hover a tile and use the slider.
+- **Sound effects**: the note button in the call bar opens a soundboard (airhorn, sad trombone, rimshot, applause …). Everybody in the call hears them, even while you are muted. Add your own MP3/WAV/OGG/M4A/FLAC files with *+ Add sound* (right-click removes them).
+- **Call sounds**: a short sound when someone joins or leaves, when you mute / unmute and when somebody mentions you (can be switched off in the settings).
+- **@mentions** in chat: type `@` for a list of people (`@everyone` / `@here` ping everybody); mentioned names are highlighted and notify the person.
 ### Devices
 
 *Settings → Audio & video devices*: choose the microphone, headphones / speakers and camera, test them (level meter, camera preview,

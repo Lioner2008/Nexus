@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "nexus-installer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "mslnk",
  "windows-sys 0.61.2",

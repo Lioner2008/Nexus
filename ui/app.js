@@ -91,7 +91,7 @@ const S = {
     theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
     skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
     micId: '', speakerId: '', camId: '', internetMode: false, inviteCode: '',
-    noUpdateCheck: false, skipVersion: '',
+    noUpdateCheck: false, skipVersion: '', noCallSounds: false, noAutoWatch: false, sounds: [], peerVolumes: {}, sfxVolume: null,
     socialServer: '', socialUser: '', socialToken: '', tsApiKey: '', tsAddress: '', noLocalServer: false,
   },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
@@ -756,6 +756,8 @@ function openSettings() {
   $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
   $('#set-local-server').checked = !S.settings.noLocalServer;
   $('#set-autoupdate').checked = !S.settings.noUpdateCheck;
+  $('#set-callsounds').checked = !S.settings.noCallSounds;
+  $('#set-autowatch').checked = !S.settings.noAutoWatch;
   Updater.fillAbout();
   Social.fillDevices();
   Social.netRefresh();
@@ -847,6 +849,8 @@ $('#set-save').addEventListener('click', async () => {
   next.rsiPath = $('#set-rsi').value.trim();
   next.noLocalServer = !$('#set-local-server').checked;
   next.noUpdateCheck = !$('#set-autoupdate').checked;
+  next.noCallSounds = !$('#set-callsounds').checked;
+  next.noAutoWatch = !$('#set-autowatch').checked;
   next.micId = $('#dev-mic').value;
   next.speakerId = $('#dev-spk').value;
   next.camId = $('#dev-cam').value;

@@ -75,6 +75,20 @@ pub struct Settings {
     // updates: do not check automatically / version the user chose to skip
     pub no_update_check: bool,
     pub skip_version: String,
+    // calls
+    pub no_call_sounds: bool,
+    pub no_auto_watch: bool,
+    pub sounds: Vec<Sound>,
+    pub peer_volumes: HashMap<String, f64>,
+    pub sfx_volume: Option<f64>,
+}
+
+/// A sound effect the user added to the call soundboard.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(default)]
+pub struct Sound {
+    pub name: String,
+    pub path: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -687,6 +701,42 @@ async fn ts_send_text(state: State<'_, AppState>, cid: i64, msg: String) -> Resu
 }
 
 // ───────────────────────────── entry point ─────────────────────────────
+// ───────────────────────────── soundboard ─────────────────────────────
+
+/// Copies an audio file into the app data folder so the soundboard keeps working if the original moves.
+#[tauri::command]
+fn import_sound(state: State<'_, AppState>, path: String) -> Result<Sound, String> {
+    let src = Path::new(&path);
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !["mp3", "wav", "ogg", "m4a", "flac"].contains(&ext.as_str()) {
+        return Err("Choose an MP3, WAV, OGG, M4A or FLAC file".into());
+    }
+    let meta = std::fs::metadata(src).map_err(|_| "File not found".to_string())?;
+    if !meta.is_file() || meta.len() > 8 * 1024 * 1024 {
+        return Err("A sound effect must be a file under 8 MB".into());
+    }
+    let dir = state.dir.join("sounds");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "sound".into());
+    let safe: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+    let dest = dir.join(format!("{}_{}.{ext}", if safe.is_empty() { "sound".to_string() } else { safe }, now_secs()));
+    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    Ok(Sound { name: stem.chars().take(24).collect(), path: dest.to_string_lossy().to_string() })
+}
+
+#[tauri::command]
+fn remove_sound(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if p.starts_with(state.dir.join("sounds")) {
+        let _ = std::fs::remove_file(p);
+    }
+    Ok(())
+}
+
 // ───────────────────────────── updates ─────────────────────────────
 
 #[tauri::command]
@@ -826,6 +876,8 @@ fn main() {
             stop_local_server,
             set_internet_mode,
             app_version,
+            import_sound,
+            remove_sound,
             set_memory_mode,
             check_update,
             install_update,
