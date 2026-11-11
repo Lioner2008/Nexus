@@ -8,6 +8,12 @@
  */
 window.Social = (() => {
   const svg = (p) => `<svg viewBox="0 0 24 24">${p}</svg>`;
+  /** Avatar color per name. Self-contained: social.js must not depend on helpers of app.js. */
+  const hue = (o) => {
+    let h = 7;
+    for (const c of String(o?.name ?? '')) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return h % 360;
+  };
   const ICON = {
     mic: svg('<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>'),
     micOff: svg('<rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M3 3l18 18"/>'),
