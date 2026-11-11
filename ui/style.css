@@ -263,14 +263,19 @@ kbd { font: 500 10.5px var(--font-d); color: var(--dim); border: 1px solid var(-
 /* ───────────────────────── grid & cards ───────────────────────── */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card), 1fr)); gap: 26px 20px; padding: 10px 24px 48px; }
 .card { content-visibility: auto; contain-intrinsic-size: auto calc(var(--card) * 1.5 + 58px); position: relative; cursor: pointer; animation: rise .55s var(--ease) backwards; animation-delay: calc(var(--i, 0) * 15ms); }
-.grid.still .card { animation: none; }
+.grid.still .card, .card.na { animation: none; }
+/* the 3D tilt only exists while a card is hovered: a permanent 3D transform made every card its own
+   GPU layer, which cost a lot of memory with a big library */
 .card-art {
   position: relative; aspect-ratio: 2 / 3; border-radius: 12px; overflow: hidden; background: var(--panel);
   border: 1px solid rgb(var(--fg-rgb) / .08);
-  transform: perspective(800px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(var(--ty, 0));
+  transform: none;
   transition: transform .28s var(--ease), box-shadow .3s, border-color .3s;
 }
-.card:hover .card-art { --ty: -7px; border-color: rgb(var(--acc-rgb) / .55); box-shadow: 0 22px 44px -14px rgba(0, 0, 0, .85), 0 0 28px -6px var(--acc-glow); }
+.card:hover .card-art {
+  transform: perspective(800px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg)) translateY(-7px);
+  border-color: rgb(var(--acc-rgb) / .55); box-shadow: 0 22px 44px -14px rgba(0, 0, 0, .85), 0 0 28px -6px var(--acc-glow);
+}
 .card.sel .card-art { border-color: var(--acc); box-shadow: 0 0 0 1px var(--acc), 0 0 30px -6px var(--acc-glow); }
 .card:active .card-art { transform: scale(.98); }
 

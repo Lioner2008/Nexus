@@ -1,8 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod art;
+mod artq;
 mod genres;
+mod library;
 mod scan;
+mod sound;
 mod ts;
 mod update;
 mod vdf;
@@ -75,6 +78,8 @@ pub struct Settings {
     // updates: do not check automatically / version the user chose to skip
     pub no_update_check: bool,
     pub skip_version: String,
+    /// do not download and install updates automatically (they are still offered)
+    pub no_auto_install: bool,
     // calls
     pub no_call_sounds: bool,
     pub no_auto_watch: bool,
@@ -126,6 +131,31 @@ pub struct AppState {
     pub io_lock: Mutex<()>,
     pub ts: tokio::sync::Mutex<Option<ts::TsConn>>,
     pub update: tokio::sync::Mutex<Option<update::UpdateInfo>>,
+    /// installer downloaded in the background, run when Nexus quits
+    pub update_ready: Mutex<Option<update::Ready>>,
+    pub update_busy: AtomicBool,
+    /// cover downloads for the grid
+    pub artq: artq::ArtQueue,
+    /// base URL of the `art` protocol as the web view sees it
+    pub art_base: Mutex<String>,
+    /// web view memory target currently set to "low"
+    pub mem_low: AtomicBool,
+}
+
+/// Runs `f` with a read-only view of library, artwork, genres and settings.
+pub fn with_ctx<R>(st: &AppState, f: impl FnOnce(&library::Ctx) -> R) -> R {
+    let c = st.cache.lock().unwrap();
+    let s = st.settings.lock().unwrap();
+    let base = st.art_base.lock().unwrap().clone();
+    let ctx = library::Ctx {
+        games: &c.library,
+        art: &c.art,
+        genres: &c.genres,
+        settings: &s,
+        art_base: &base,
+        now: now_secs(),
+    };
+    f(&ctx)
 }
 
 impl AppState {
@@ -195,7 +225,7 @@ fn spawn_exe(exe: &str, args: Option<&str>) -> Result<(), String> {
     c.spawn().map(|_| ()).map_err(|e| format!("Could not start: {e}"))
 }
 
-fn now_secs() -> u64 {
+pub fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -208,42 +238,179 @@ fn now_secs() -> u64 {
 #[serde(rename_all = "camelCase")]
 struct Boot {
     settings: Settings,
-    library: Vec<Game>,
-    art: HashMap<String, Art>,
-    genres: HashMap<String, Vec<String>>,
+    has_library: bool,
 }
 
+/// First call of the UI. `art_base` is the URL prefix of the `art` protocol in this web view.
 #[tauri::command]
-fn bootstrap(state: State<'_, AppState>) -> Boot {
-    let c = state.cache.lock().unwrap();
-    Boot {
-        settings: state.settings.lock().unwrap().clone(),
-        library: c.library.clone(),
-        art: c.art.clone(),
-        genres: c.genres.clone(),
+fn bootstrap(state: State<'_, AppState>, art_base: Option<String>) -> Boot {
+    if let Some(b) = art_base.filter(|b| b.starts_with("http")) {
+        *state.art_base.lock().unwrap() = if b.ends_with('/') { b } else { format!("{b}/") };
+    }
+    let has_library = !state.cache.lock().unwrap().library.is_empty();
+    Boot { settings: state.settings.lock().unwrap().clone(), has_library }
+}
+
+/// The settings dialog saves everything at once; values Rust owns itself are kept.
+#[tauri::command]
+fn save_settings(state: State<'_, AppState>, settings: Settings) -> Settings {
+    let (key_changed, out) = {
+        let mut cur = state.settings.lock().unwrap();
+        let mut next = settings;
+        next.favorites = std::mem::take(&mut cur.favorites);
+        next.last_played = std::mem::take(&mut cur.last_played);
+        next.internet_mode = cur.internet_mode;
+        next.invite_code = std::mem::take(&mut cur.invite_code);
+        let changed = next.sgdb_key.trim() != cur.sgdb_key.trim();
+        *cur = next;
+        (changed, cur.clone())
+    };
+    state.save_settings();
+    if key_changed {
+        state.artq.dead.store(false, Ordering::SeqCst);
+        state.artq.clear();
+        artq::queue_all(&state);
+    }
+    out
+}
+
+/// Filtered and sorted library with the ready-made HTML of every card.
+#[tauri::command]
+fn library_view(state: State<'_, AppState>, query: library::Query) -> library::View {
+    with_ctx(&state, |ctx| ctx.view(&query))
+}
+
+/// Fetches banner, logo and icon of one game in the background and sends the new header.
+fn spawn_extras(app: AppHandle, g: Game) {
+    tauri::async_runtime::spawn(async move {
+        let st = app.state::<AppState>();
+        if art::ensure_extras(&st, &g.id, &g.name, g.steam_appid).await.is_ok() {
+            if let Some(h) = with_ctx(&st, |ctx| ctx.hero(&g.id)) {
+                let _ = app.emit("hero-updated", h);
+            }
+        }
+    });
+}
+
+/// Header of one game. Missing banner/logo/icon are fetched in the background (`hero-updated`).
+#[tauri::command]
+fn hero_view(app: AppHandle, state: State<'_, AppState>, id: Option<String>) -> Option<library::Hero> {
+    let known = id.filter(|i| state.cache.lock().unwrap().library.iter().any(|g| g.id == *i));
+    let id = match known {
+        Some(i) => i,
+        None => with_ctx(&state, |ctx| ctx.default_selection())?,
+    };
+    let hero = with_ctx(&state, |ctx| ctx.hero(&id));
+    let has_key = !state.settings.lock().unwrap().sgdb_key.trim().is_empty();
+    let tried = state.cache.lock().unwrap().art.get(&id).map(|a| a.extras_tried).unwrap_or(false);
+    if has_key && !tried {
+        if let Ok(g) = find_game(&state, &id) {
+            spawn_extras(app, g);
+        }
+    }
+    hero
+}
+
+/// Cards currently on screen: their covers are downloaded first.
+#[tauri::command]
+fn art_visible(state: State<'_, AppState>, ids: Vec<String>) {
+    if state.artq.dead.load(Ordering::SeqCst) || state.settings.lock().unwrap().sgdb_key.trim().is_empty() {
+        return;
+    }
+    let need: Vec<String> = {
+        let c = state.cache.lock().unwrap();
+        ids.into_iter()
+            .filter(|id| c.art.get(id).map(|a| a.cover.is_none() && !a.cover_tried).unwrap_or(true))
+            .filter(|id| c.library.iter().any(|g| g.id == *id))
+            .take(64)
+            .collect()
+    };
+    if !need.is_empty() {
+        state.artq.push_front(&need);
     }
 }
 
 #[tauri::command]
-fn save_settings(state: State<'_, AppState>, settings: Settings) {
-    *state.settings.lock().unwrap() = settings;
+fn toggle_favorite(state: State<'_, AppState>, id: String) -> bool {
+    let on = {
+        let mut s = state.settings.lock().unwrap();
+        if let Some(i) = s.favorites.iter().position(|f| *f == id) {
+            s.favorites.remove(i);
+            false
+        } else {
+            s.favorites.push(id);
+            true
+        }
+    };
     state.save_settings();
+    on
+}
+
+/// Starts genre lookups and cover downloads for everything that is still missing.
+fn start_background_work(app: &AppHandle) {
+    let st = app.state::<AppState>();
+    artq::queue_all(&st);
+    start_enrich(app.clone(), st);
 }
 
 #[tauri::command]
-async fn scan_library(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<Game>, String> {
+async fn scan_library(app: AppHandle, state: State<'_, AppState>) -> Result<usize, String> {
     let (steam_key, rsi_path) = {
         let s = state.settings.lock().unwrap();
         (s.steam_key.clone(), s.rsi_path.clone())
     };
     let games = scan::scan_all(&app, &state.http, &steam_key, &rsi_path).await;
-    state.cache.lock().unwrap().library = games.clone();
+    let n = games.len();
+    state.cache.lock().unwrap().library = games;
     state.save_cache();
-    Ok(games)
+    start_background_work(&app);
+    Ok(n)
+}
+
+fn find_game(state: &AppState, id: &str) -> Result<Game, String> {
+    state
+        .cache
+        .lock()
+        .unwrap()
+        .library
+        .iter()
+        .find(|g| g.id == id)
+        .cloned()
+        .ok_or_else(|| "This game is no longer in the library".to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Played {
+    launched: bool,
+    ts: u64,
+    minimize: bool,
+    message: String,
+}
+
+/// Play button: starts an installed game, otherwise opens its launcher to install it.
+#[tauri::command]
+fn play_game(id: String, state: State<'_, AppState>) -> Result<Played, String> {
+    let game = find_game(&state, &id)?;
+    if !game.installed {
+        let message = install_game(id, state)?;
+        return Ok(Played { launched: false, ts: 0, minimize: false, message });
+    }
+    let l = launch_game(id, state)?;
+    Ok(Played { launched: true, ts: l.ts, minimize: l.minimize, message: format!("Launching {}…", l.name) })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Launched {
+    ts: u64,
+    name: String,
+    minimize: bool,
 }
 
 #[tauri::command]
-fn launch_game(game: Game, state: State<'_, AppState>) -> Result<u64, String> {
+fn launch_game(id: String, state: State<'_, AppState>) -> Result<Launched, String> {
+    let game = find_game(&state, &id)?;
     if let Some(exe) = &game.exe {
         spawn_exe(exe, game.args.as_deref())?;
     } else if let Some(uri) = &game.launch_uri {
@@ -252,21 +419,32 @@ fn launch_game(game: Game, state: State<'_, AppState>) -> Result<u64, String> {
         return Err("No launch command found for this game".into());
     }
     let ts = now_secs();
-    state
-        .settings
-        .lock()
-        .unwrap()
-        .last_played
-        .insert(game.id, ts);
+    let minimize = {
+        let mut s = state.settings.lock().unwrap();
+        s.last_played.insert(game.id.clone(), ts);
+        s.minimize_on_launch
+    };
     state.save_settings();
-    Ok(ts)
+    Ok(Launched { ts, name: game.name, minimize })
+}
+
+/// Opens the store page / launcher to install a game. Returns the message for the UI.
+#[tauri::command]
+fn install_game(id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let game = find_game(&state, &id)?;
+    let launcher = library::platform_name(&game.platform).to_string();
+    match &game.install_uri {
+        Some(uri) => open_uri(uri).map(|_| format!("Opening {launcher} to install {}", game.name)),
+        None => Err(format!("Install {} from its launcher", game.name)),
+    }
 }
 
 #[tauri::command]
-fn install_game(game: Game) -> Result<(), String> {
-    match &game.install_uri {
-        Some(uri) => open_uri(uri),
-        None => Err("Install this game from its launcher".into()),
+fn open_game_folder(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let game = find_game(&state, &id)?;
+    match game.install_path {
+        Some(p) if game.installed => open_folder(p),
+        _ => Err("This game is not installed".into()),
     }
 }
 
@@ -283,9 +461,10 @@ fn open_folder(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Deletes all downloaded artwork; it is fetched again on demand.
+/// Deletes all downloaded artwork; it is fetched again in the background.
 #[tauri::command]
 fn clear_art_cache(state: State<'_, AppState>) -> usize {
+    state.artq.clear();
     let n = std::fs::read_dir(state.dir.join("art"))
         .map(|d| d.count())
         .unwrap_or(0);
@@ -315,6 +494,8 @@ fn clear_art_cache(state: State<'_, AppState>) -> usize {
         c.sgdb_ids.clear();
     }
     state.save_cache();
+    state.artq.dead.store(false, Ordering::SeqCst);
+    artq::queue_all(&state);
     n
 }
 
@@ -331,24 +512,53 @@ fn open_url(url: String) -> Result<(), String> {
     open_uri(&url)
 }
 
-#[tauri::command]
-async fn fetch_cover(
-    state: State<'_, AppState>,
-    id: String,
-    name: String,
-    steam_appid: Option<u32>,
-) -> Result<Option<String>, String> {
-    art::ensure_cover(&state, &id, &name, steam_appid).await
+/// What the UI needs after the artwork of one game changed.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtChange {
+    cover: Option<String>,
+    card: Option<String>,
+    hero: Option<library::Hero>,
+    current: ArtCurrent,
 }
 
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ArtCurrent {
+    url: Option<String>,
+    custom: bool,
+}
+
+fn art_current_of(ctx: &library::Ctx, id: &str, kind: &str) -> ArtCurrent {
+    let Some(a) = ctx.art.get(id) else {
+        return ArtCurrent::default();
+    };
+    let (p, custom) = match kind {
+        "cover" => (&a.cover, a.cover_custom),
+        "hero" => (&a.hero, a.hero_custom),
+        "logo" => (&a.logo, a.logo_custom),
+        _ => (&a.icon, a.icon_custom),
+    };
+    ArtCurrent { url: p.as_deref().map(|p| ctx.art_url(id, kind, p)), custom }
+}
+
+fn art_change(state: &AppState, id: &str, kind: &str) -> ArtChange {
+    with_ctx(state, |ctx| {
+        let fav: HashSet<&str> = ctx.settings.favorites.iter().map(String::as_str).collect();
+        let g = ctx.games.iter().find(|g| g.id == id);
+        ArtChange {
+            cover: ctx.art.get(id).and_then(|a| a.cover.as_deref()).map(|p| ctx.art_url(id, "cover", p)),
+            card: g.map(|g| ctx.card_html(g, 0, &fav)),
+            hero: ctx.hero(id),
+            current: art_current_of(ctx, id, kind),
+        }
+    })
+}
+
+/// The image currently used for one artwork type of one game (artwork picker).
 #[tauri::command]
-async fn fetch_extras(
-    state: State<'_, AppState>,
-    id: String,
-    name: String,
-    steam_appid: Option<u32>,
-) -> Result<Art, String> {
-    art::ensure_extras(&state, &id, &name, steam_appid).await
+fn art_current(state: State<'_, AppState>, id: String, kind: String) -> ArtCurrent {
+    with_ctx(&state, |ctx| art_current_of(ctx, &id, &kind))
 }
 
 /// All SteamGridDB alternatives for one artwork type ("cover", "hero", "logo", "icon").
@@ -356,11 +566,10 @@ async fn fetch_extras(
 async fn list_art_options(
     state: State<'_, AppState>,
     id: String,
-    name: String,
-    steam_appid: Option<u32>,
     kind: String,
 ) -> Result<Vec<art::ArtOption>, String> {
-    art::list_options(&state, &id, &name, steam_appid, &kind).await
+    let g = find_game(&state, &id)?;
+    art::list_options(&state, &id, &g.name, g.steam_appid, &kind).await
 }
 
 /// Uses an https image URL or a local image file as the artwork for one game.
@@ -370,14 +579,21 @@ async fn set_art(
     id: String,
     kind: String,
     source: String,
-) -> Result<Art, String> {
-    art::set_custom(&state, &id, &kind, &source).await
+) -> Result<ArtChange, String> {
+    art::set_custom(&state, &id, &kind, &source).await?;
+    Ok(art_change(&state, &id, &kind))
 }
 
 /// Removes the user's choice again; automatic matching takes over.
 #[tauri::command]
-fn reset_art(state: State<'_, AppState>, id: String, kind: String) -> Result<Art, String> {
-    art::reset_custom(&state, &id, &kind)
+fn reset_art(app: AppHandle, state: State<'_, AppState>, id: String, kind: String) -> Result<ArtChange, String> {
+    art::reset_custom(&state, &id, &kind)?;
+    if kind == "cover" {
+        state.artq.push_front(&[id.clone()]);
+    } else if let Ok(g) = find_game(&state, &id) {
+        spawn_extras(app, g);
+    }
+    Ok(art_change(&state, &id, &kind))
 }
 
 #[tauri::command]
@@ -700,13 +916,26 @@ async fn ts_send_text(state: State<'_, AppState>, cid: i64, msg: String) -> Resu
     ts_call!(state, c => ts::send_channel_text(c, cid, &msg))
 }
 
-// ───────────────────────────── entry point ─────────────────────────────
 // ───────────────────────────── soundboard ─────────────────────────────
 
-/// Copies an audio file into the app data folder so the soundboard keeps working if the original moves.
+fn safe_stem(src: &Path) -> (String, String) {
+    let stem = src
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sound".into());
+    let safe: String = stem
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .take(40)
+        .collect();
+    (stem, if safe.is_empty() { "sound".to_string() } else { safe })
+}
+
+/// Decodes an audio file once and stores the first seconds as a small mono WAV in the app data
+/// folder, so the soundboard keeps working if the original moves and needs little memory to play.
 #[tauri::command]
-fn import_sound(state: State<'_, AppState>, path: String) -> Result<Sound, String> {
-    let src = Path::new(&path);
+async fn import_sound(state: State<'_, AppState>, path: String) -> Result<Sound, String> {
+    let src = PathBuf::from(&path);
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
@@ -715,16 +944,18 @@ fn import_sound(state: State<'_, AppState>, path: String) -> Result<Sound, Strin
     if !["mp3", "wav", "ogg", "m4a", "flac"].contains(&ext.as_str()) {
         return Err("Choose an MP3, WAV, OGG, M4A or FLAC file".into());
     }
-    let meta = std::fs::metadata(src).map_err(|_| "File not found".to_string())?;
-    if !meta.is_file() || meta.len() > 8 * 1024 * 1024 {
-        return Err("A sound effect must be a file under 8 MB".into());
+    let meta = std::fs::metadata(&src).map_err(|_| "File not found".to_string())?;
+    if !meta.is_file() || meta.len() > 64 * 1024 * 1024 {
+        return Err("A sound effect must be a file under 64 MB".into());
     }
     let dir = state.dir.join("sounds");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stem = src.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "sound".into());
-    let safe: String = stem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
-    let dest = dir.join(format!("{}_{}.{ext}", if safe.is_empty() { "sound".to_string() } else { safe }, now_secs()));
-    std::fs::copy(src, &dest).map_err(|e| e.to_string())?;
+    let (stem, safe) = safe_stem(&src);
+    let dest = dir.join(format!("{safe}_{}.wav", now_secs()));
+    let d2 = dest.clone();
+    tauri::async_runtime::spawn_blocking(move || sound::to_short_wav(&src, &d2))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(Sound { name: stem.chars().take(24).collect(), path: dest.to_string_lossy().to_string() })
 }
 
@@ -734,7 +965,50 @@ fn remove_sound(state: State<'_, AppState>, path: String) -> Result<(), String> 
     if p.starts_with(state.dir.join("sounds")) {
         let _ = std::fs::remove_file(p);
     }
+    let changed = {
+        let mut s = state.settings.lock().unwrap();
+        let before = s.sounds.len();
+        s.sounds.retain(|x| x.path != path);
+        before != s.sounds.len()
+    };
+    if changed {
+        state.save_settings();
+    }
     Ok(())
+}
+
+/// Sounds imported by older versions are full copies of the original file: shrink them once.
+fn migrate_sounds(st: &AppState) -> bool {
+    let sounds = st.settings.lock().unwrap().sounds.clone();
+    let dir = st.dir.join("sounds");
+    let mut changed = false;
+    let mut out = Vec::with_capacity(sounds.len());
+    for s in sounds {
+        let p = PathBuf::from(&s.path);
+        let small = p.extension().map(|e| e.eq_ignore_ascii_case("wav")).unwrap_or(false)
+            && std::fs::metadata(&p).map(|m| m.len() < 1_000_000).unwrap_or(false);
+        if small || !p.exists() {
+            out.push(s);
+            continue;
+        }
+        let (_, safe) = safe_stem(&p);
+        let dest = dir.join(format!("{safe}_{}_s.wav", now_secs()));
+        match sound::to_short_wav(&p, &dest) {
+            Ok(_) => {
+                if p.starts_with(&dir) {
+                    let _ = std::fs::remove_file(&p);
+                }
+                out.push(Sound { name: s.name, path: dest.to_string_lossy().to_string() });
+                changed = true;
+            }
+            Err(_) => out.push(s),
+        }
+    }
+    if changed {
+        st.settings.lock().unwrap().sounds = out;
+        st.save_settings();
+    }
+    changed
 }
 
 // ───────────────────────────── updates ─────────────────────────────
@@ -751,17 +1025,30 @@ async fn check_update(state: State<'_, AppState>) -> Result<update::UpdateInfo, 
     Ok(info)
 }
 
-/// Downloads and starts the installer, then quits so the installer can replace the files.
+/// Is an update already downloaded and waiting for the next restart?
+#[tauri::command]
+fn update_ready(state: State<'_, AppState>) -> Option<String> {
+    state.update_ready.lock().unwrap().as_ref().map(|r| r.version.clone())
+}
+
+/// Installs now: uses the installer downloaded in the background, otherwise downloads it first.
+/// Starts the installer and quits so it can replace the files; Nexus opens again afterwards.
 #[tauri::command]
 async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    let info = match state.update.lock().await.clone() {
-        Some(i) if i.available => i,
-        _ => update::check(&state.http).await?,
-    };
-    if !info.available {
-        return Err("Nexus is already up to date".into());
+    let ready = state.update_ready.lock().unwrap().take();
+    match ready {
+        Some(r) if r.path.exists() => update::run_installer(&r.path, true)?,
+        _ => {
+            let info = match state.update.lock().await.clone() {
+                Some(i) if i.available => i,
+                _ => update::check(&state.http).await?,
+            };
+            if !info.available {
+                return Err("Nexus is already up to date".into());
+            }
+            update::download_and_run(&app, &state.http, &info).await?;
+        }
     }
-    update::download_and_run(&app, &state.http, &info).await?;
     let a = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_millis(600)).await;
@@ -769,15 +1056,21 @@ async fn install_update(app: AppHandle, state: State<'_, AppState>) -> Result<()
     });
     Ok(())
 }
+
+// ───────────────────────────── memory ─────────────────────────────
+
 /// Asks the web view to trim its memory while Nexus is minimized or hidden (e.g. during a game)
 /// and to go back to normal when it is shown again.
 #[cfg(windows)]
-#[tauri::command]
-fn set_memory_mode(app: AppHandle, low: bool) -> Result<(), String> {
+fn apply_memory_mode(app: &AppHandle, low: bool) -> Result<(), String> {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
         ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
     };
     use windows::core::Interface;
+    let st = app.state::<AppState>();
+    if st.mem_low.swap(low, Ordering::SeqCst) == low {
+        return Ok(());
+    }
     let win = app.get_webview_window("main").ok_or("window not found")?;
     win.with_webview(move |wv| unsafe {
         if let Ok(core) = wv.controller().CoreWebView2() {
@@ -795,14 +1088,84 @@ fn set_memory_mode(app: AppHandle, low: bool) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-#[tauri::command]
-fn set_memory_mode(_low: bool) -> Result<(), String> {
+fn apply_memory_mode(_app: &AppHandle, _low: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn set_memory_mode(app: AppHandle, low: bool) -> Result<(), String> {
+    apply_memory_mode(&app, low)
+}
+
+// ───────────────────────────── artwork protocol ─────────────────────────────
+
+/// `art://<kind>/<game id>` (in the web view: `http://art.localhost/<kind>/<id>`): serves the
+/// downloaded or chosen image of one game straight from disk. The UI never handles file paths.
+fn serve_art(app: &AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    let not_found = || {
+        tauri::http::Response::builder()
+            .status(404)
+            .body(Vec::new())
+            .unwrap()
+    };
+    let mut parts = path.trim_start_matches('/').splitn(2, '/');
+    let (Some(kind), Some(raw_id)) = (parts.next(), parts.next()) else {
+        return not_found();
+    };
+    let Ok(id) = urlencoding::decode(raw_id) else {
+        return not_found();
+    };
+    let st = app.state::<AppState>();
+    let file = {
+        let c = st.cache.lock().unwrap();
+        c.art.get(id.as_ref()).and_then(|a| match kind {
+            "cover" => a.cover.clone(),
+            "hero" => a.hero.clone(),
+            "logo" => a.logo.clone(),
+            "icon" => a.icon.clone(),
+            _ => None,
+        })
+    };
+    let Some(file) = file.map(PathBuf::from) else {
+        return not_found();
+    };
+    if !file.starts_with(&st.dir) {
+        return not_found();
+    }
+    let Ok(bytes) = std::fs::read(&file) else {
+        return not_found();
+    };
+    let ext = file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    };
+    tauri::http::Response::builder()
+        .status(200)
+        .header("Content-Type", mime)
+        // the URL carries a version, so the web view may cache the file for good
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .body(bytes)
+        .unwrap()
+}
+
+// ───────────────────────────── entry point ─────────────────────────────
+
 fn main() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_asynchronous_uri_scheme_protocol("art", |ctx, req, responder| {
+            let app = ctx.app_handle().clone();
+            let path = req.uri().path().to_string();
+            std::thread::spawn(move || responder.respond(serve_art(&app, &path)));
+        })
         .setup(|app| {
             // NEXUS_DATA_DIR: developer override (tests run against a separate data folder)
             let dir = match std::env::var_os("NEXUS_DATA_DIR") {
@@ -813,7 +1176,7 @@ fn main() {
             let settings: Settings = read_json(dir.join("settings.json"));
             let cache: Cache = read_json(dir.join("cache.json"));
             let http = reqwest::Client::builder()
-                .user_agent("Nexus/0.1")
+                .user_agent(concat!("Nexus/", env!("CARGO_PKG_VERSION")))
                 .timeout(Duration::from_secs(30))
                 .build()?;
             app.manage(AppState {
@@ -825,8 +1188,15 @@ fn main() {
                 io_lock: Mutex::new(()),
                 ts: tokio::sync::Mutex::new(None),
                 update: tokio::sync::Mutex::new(None),
+                update_ready: Mutex::new(None),
+                update_busy: AtomicBool::new(false),
+                artq: artq::ArtQueue::default(),
+                art_base: Mutex::new(if cfg!(windows) { "http://art.localhost/".into() } else { "art://localhost/".into() }),
+                mem_low: AtomicBool::new(false),
             });
-            // shrink artwork downloaded by older versions (big PNGs) in the background
+            artq::start_workers(app.handle());
+            update::spawn_background(app.handle().clone());
+            // shrink artwork and sounds stored by older versions, then start the background work
             {
                 let h = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -834,11 +1204,22 @@ fn main() {
                     let h2 = h.clone();
                     let res = tauri::async_runtime::spawn_blocking(move || {
                         let st = h2.state::<AppState>();
-                        art::migrate_existing(&st)
+                        migrate_sounds(&st);
+                        art::migrate_existing(&st).is_some()
                     })
                     .await;
-                    if let Ok(Some(map)) = res {
-                        let _ = h.emit("art-optimized", map);
+                    if let Ok(true) = res {
+                        let _ = h.emit("library-changed", ());
+                    }
+                    let skip_scan = {
+                        let st = h.state::<AppState>();
+                        let s = st.settings.lock().unwrap();
+                        s.skip_startup_scan
+                    };
+                    let has_library = !h.state::<AppState>().cache.lock().unwrap().library.is_empty();
+                    // with a startup scan, scan_library starts the downloads itself when it is done
+                    if skip_scan && has_library {
+                        start_background_work(&h);
                     }
                 });
             }
@@ -858,18 +1239,31 @@ fn main() {
             }
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // minimized: let the web view give memory back (games get it), restored: back to normal
+            if let tauri::WindowEvent::Resized(_) = event {
+                if let Ok(min) = window.is_minimized() {
+                    let _ = apply_memory_mode(window.app_handle(), min);
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             save_settings,
+            library_view,
+            hero_view,
+            art_visible,
+            toggle_favorite,
             scan_library,
+            play_game,
             launch_game,
             install_game,
+            open_game_folder,
             open_folder,
             open_url,
             clear_art_cache,
             open_data_folder,
-            fetch_cover,
-            fetch_extras,
+            art_current,
             test_sgdb_key,
             server_status,
             start_local_server,
@@ -880,6 +1274,7 @@ fn main() {
             remove_sound,
             set_memory_mode,
             check_update,
+            update_ready,
             install_update,
             ts_connect,
             ts_disconnect,
@@ -893,6 +1288,18 @@ fn main() {
             reset_art,
             start_enrich,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Nexus");
+        .build(tauri::generate_context!())
+        .expect("error while building Nexus");
+
+    app.run(|handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // an update downloaded in the background is installed now, silently
+            let ready = handle.state::<AppState>().update_ready.lock().unwrap().take();
+            if let Some(r) = ready {
+                if r.path.exists() {
+                    let _ = update::run_installer(&r.path, false);
+                }
+            }
+        }
+    });
 }

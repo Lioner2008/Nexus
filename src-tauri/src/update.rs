@@ -136,9 +136,8 @@ fn spawn_installer(path: &PathBuf, args: &[String]) -> std::io::Result<()> {
     Command::new(path).args(args).spawn().map(|_| ())
 }
 
-/// Downloads the installer (progress via the `update-progress` event), verifies it and starts it.
-/// The caller quits the app afterwards.
-pub async fn download_and_run(app: &AppHandle, http: &reqwest::Client, info: &UpdateInfo) -> Result<(), String> {
+/// Downloads the installer (progress via the `update-progress` event) and verifies it.
+pub async fn download(app: &AppHandle, http: &reqwest::Client, info: &UpdateInfo) -> Result<PathBuf, String> {
     if info.installer_url.is_empty() {
         return Err("This release has no installer".into());
     }
@@ -193,11 +192,86 @@ pub async fn download_and_run(app: &AppHandle, http: &reqwest::Client, info: &Up
         }
     }
 
+    Ok(path)
+}
+
+/// Starts a downloaded installer silently. With `launch` it opens Nexus again when it is done.
+pub fn run_installer(path: &PathBuf, launch: bool) -> Result<(), String> {
     let args: Vec<String> = match std::env::var("NEXUS_UPDATE_ARGS") {
         Ok(a) if dev_override() => a.split_whitespace().map(String::from).collect(),
-        _ => vec!["/S".into(), "--launch".into()],
+        _ if launch => vec!["/S".into(), "--launch".into()],
+        _ => vec!["/S".into()],
     };
-    spawn_installer(&path, &args).map_err(|e| format!("Could not start the installer: {e}"))
+    spawn_installer(path, &args).map_err(|e| format!("Could not start the installer: {e}"))
+}
+
+/// Downloads, verifies and starts the installer. The caller quits the app afterwards.
+pub async fn download_and_run(app: &AppHandle, http: &reqwest::Client, info: &UpdateInfo) -> Result<(), String> {
+    let path = download(app, http, info).await?;
+    run_installer(&path, true)
+}
+
+/// An update that was downloaded in the background and is installed when Nexus quits.
+#[derive(Clone, Debug)]
+pub struct Ready {
+    pub path: PathBuf,
+    pub version: String,
+}
+
+/// Background updates, entirely in Rust: shortly after the start and then every 6 hours Nexus asks
+/// GitHub for a new release. With automatic installation on (the default) the installer is
+/// downloaded and verified right away; it runs silently as soon as Nexus is closed.
+pub fn spawn_background(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+        loop {
+            background_round(&app).await;
+            tokio::time::sleep(std::time::Duration::from_secs(6 * 3600)).await;
+        }
+    });
+}
+
+async fn background_round(app: &AppHandle) {
+    use tauri::Manager;
+    let st = app.state::<crate::AppState>();
+    let (off, skip, auto) = {
+        let s = st.settings.lock().unwrap();
+        (s.no_update_check, s.skip_version.clone(), !s.no_auto_install)
+    };
+    if off {
+        return;
+    }
+    let Ok(info) = check(&st.http).await else { return };
+    *st.update.lock().await = Some(info.clone());
+    if !info.available || info.latest == skip {
+        return;
+    }
+    let already = st
+        .update_ready
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|r| r.version == info.latest)
+        .unwrap_or(false);
+    if already {
+        let _ = app.emit("update-ready", &info);
+        return;
+    }
+    let _ = app.emit("update-available", &info);
+    if !auto || st.update_busy.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let res = download(app, &st.http, &info).await;
+    st.update_busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    match res {
+        Ok(path) => {
+            *st.update_ready.lock().unwrap() = Some(Ready { path, version: info.latest.clone() });
+            let _ = app.emit("update-ready", &info);
+        }
+        Err(e) => {
+            let _ = app.emit("update-error", e);
+        }
+    }
 }
 
 #[cfg(test)]

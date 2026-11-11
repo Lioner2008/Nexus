@@ -1,0 +1,63 @@
+name: Check
+
+# Every push to a branch other than main: unit tests of launcher and server, a release build and the
+# installer as a downloadable artifact (for trying a version before it becomes a release).
+on:
+  push:
+    branches-ignore: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src-tauri
+            server
+            installer
+
+      - name: UI scripts parse
+        shell: bash
+        run: for f in ui/*.js; do node --check "$f" || exit 1; done
+
+      # compiler errors are turned into annotations so they show up on the run page
+      - name: Launcher tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path src-tauri/Cargo.toml --message-format=short 2>&1 | tee test.log || {
+            grep -E 'error(\[E[0-9]+\])?:|panicked|FAILED|failed' test.log | head -40 | while read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+
+      - name: Server tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --manifest-path server/Cargo.toml --message-format=short 2>&1 | tee server.log || {
+            grep -E 'error(\[E[0-9]+\])?:|panicked|FAILED' server.log | head -40 | while read -r l; do echo "::error::$l"; done
+            exit 1
+          }
+
+      - name: Build installer (builds launcher and server first)
+        shell: pwsh
+        run: ./installer/build.ps1
+
+      - name: Warnings
+        shell: bash
+        run: grep -E '^[^ ]+: warning:' test.log | sort -u | head -30 | while read -r l; do echo "::warning::$l"; done || true
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: nexus-test-build
+          path: |
+            release/*.exe
+            src-tauri/target/release/nexus.exe
+            server/target/release/nexus-server.exe

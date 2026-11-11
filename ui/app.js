@@ -82,75 +82,58 @@ const api = T
   ? { invoke: T.core.invoke, listen: T.event.listen, src: T.core.convertFileSrc, win: T.window.getCurrentWindow() }
   : makeMock();
 
-/* ───────────────────────── state ───────────────────────── */
+/* ───────────────────────── state ─────────────────────────
+ * The library itself (games, artwork, genres, favorites, sorting, filtering, the HTML of every
+ * card and of the header) lives in Rust. This file only keeps what is on screen right now. */
 
 const S = {
-  games: [], byId: new Map(), art: {}, genres: {},
   settings: {
     sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {},
     theme: 'neon', accent: '#c8ff2e', bgTone: 'black', noMotion: false,
     skipStartupScan: false, minimizeOnLaunch: false, rsiPath: '',
     micId: '', speakerId: '', camId: '', internetMode: false, inviteCode: '',
-    noUpdateCheck: false, skipVersion: '', noCallSounds: false, noAutoWatch: false, sounds: [], peerVolumes: {}, sfxVolume: null,
+    noUpdateCheck: false, noAutoInstall: false, skipVersion: '', noCallSounds: false, noAutoWatch: false, sounds: [], peerVolumes: {}, sfxVolume: null,
     socialServer: '', socialUser: '', socialToken: '', tsApiKey: '', tsAddress: '', noLocalServer: false,
   },
   view: 'all', platform: null, install: 'all', genre: 'ALL', q: '', sort: 'recent',
   selected: null, scanning: false,
+  // current library view from Rust
+  ids: [], cards: [], index: new Map(), counts: { all: 0, fav: 0, recent: 0, installed: 0, platforms: {}, covered: 0, tried: 0 },
+  hero: null,
 };
-let favSet = new Set();
-let cardEls = new Map();
 const loadedCovers = new Set();
 const grid = $('#grid');
 const scroller = $('#scroller');
 
-const hue = (g) => { let h = 7; for (const c of g.name) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; };
-const lastPlayed = (g) => S.settings.lastPlayed[g.id] || 0;
-const fmtPlay = (m) => (m < 60 ? `${m}m` : `${(m / 60).toFixed(m < 600 ? 1 : 0)}h`);
-const fmtSize = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
-function ago(ts) {
-  const d = Math.floor((Date.now() / 1000 - ts) / 86400);
-  if (d <= 0) return 'today';
-  if (d === 1) return 'yesterday';
-  if (d < 30) return `${d} days ago`;
-  return `${Math.floor(d / 30)} mo ago`;
-}
-
-function setGames(list) {
-  S.games = list;
-  S.byId = new Map(list.map((g) => [g.id, g]));
-}
-
 let saveT = 0;
 function saveSettings() {
   clearTimeout(saveT);
-  saveT = setTimeout(() => api.invoke('save_settings', { settings: S.settings }), 300);
+  saveT = setTimeout(() => api.invoke('save_settings', { settings: S.settings }).then((s) => { if (s) S.settings = { ...S.settings, ...s }; }), 300);
 }
 
-/* ───────────────────────── filtering & sorting ───────────────────────── */
+const query = () => ({ view: S.view, platform: S.platform, install: S.install, genre: S.genre, q: S.q, sort: S.sort });
 
-function filtered(skipGenre) {
-  const q = S.q.trim().toLowerCase();
-  return S.games.filter((g) => {
-    if (S.view === 'fav' && !favSet.has(g.id)) return false;
-    if (S.view === 'recent' && !lastPlayed(g)) return false;
-    if (S.platform && g.platform !== S.platform) return false;
-    if (S.install === 'installed' && !g.installed) return false;
-    if (S.install === 'missing' && g.installed) return false;
-    if (q && !g.name.toLowerCase().includes(q)) return false;
-    if (!skipGenre && S.genre !== 'ALL' && !(S.genres[g.id] || []).includes(S.genre)) return false;
-    return true;
-  });
-}
-
-function sortGames(list) {
-  const byName = (x, y) => x.name.localeCompare(y.name);
-  const cmp = {
-    recent: (x, y) => (y.installed - x.installed) || (lastPlayed(y) - lastPlayed(x)) || byName(x, y),
-    az: byName,
-    played: (x, y) => ((y.playtimeMin || 0) - (x.playtimeMin || 0)) || (lastPlayed(y) - lastPlayed(x)) || byName(x, y),
-    platform: (x, y) => x.platform.localeCompare(y.platform) || byName(x, y),
-  }[S.sort];
-  return [...list].sort(cmp);
+/** Asks Rust for the library view. `grid`: false keeps the cards on screen (counters/chips only). */
+let viewSeq = 0;
+async function refresh(still, opts = {}) {
+  const seq = ++viewSeq;
+  const v = await api.invoke('library_view', { query: query() });
+  if (seq !== viewSeq) return; // a newer request is on its way
+  S.counts = v.counts;
+  S.genre = v.genre;
+  renderNav();
+  renderChips(v.chips);
+  updateArtRow();
+  const same = v.ids.length === S.ids.length && v.ids.every((id, i) => id === S.ids[i]);
+  if (opts.grid === false && same) {
+    S.cards = v.cards; // fresh HTML (e.g. a new genre) for cards mounted later
+    return;
+  }
+  if (opts.grid === false) return;
+  S.ids = v.ids;
+  S.cards = v.cards;
+  S.index = new Map(v.ids.map((id, i) => [id, i]));
+  renderGrid(still);
 }
 
 /* ───────────────────────── rendering: sidebar & chips ───────────────────────── */
@@ -169,9 +152,10 @@ function setCount(el, n) {
 }
 
 function renderNav() {
-  setCount($('#c-all'), S.games.length);
-  setCount($('#c-fav'), S.games.filter((g) => favSet.has(g.id)).length);
-  setCount($('#c-recent'), S.games.filter((g) => lastPlayed(g)).length);
+  const c = S.counts;
+  setCount($('#c-all'), c.all);
+  setCount($('#c-fav'), c.fav);
+  setCount($('#c-recent'), c.recent);
   const host = $('#platforms');
   if (!host.children.length) {
     host.innerHTML = Object.entries(PLATFORMS).map(([id, p]) =>
@@ -179,7 +163,7 @@ function renderNav() {
   }
   for (const b of $$('.nav-item[data-platform]')) {
     const id = b.dataset.platform;
-    const n = S.games.filter((g) => g.platform === id).length;
+    const n = c.platforms[id] || 0;
     b.classList.toggle('on', S.platform === id);
     b.classList.toggle('zero', n === 0);
     setCount($('em', b), n);
@@ -187,8 +171,7 @@ function renderNav() {
   for (const b of $$('.nav-item[data-view]')) {
     b.classList.toggle('on', b.dataset.view === S.view && !(b.dataset.view === 'all' && S.platform));
   }
-  const inst = S.games.filter((g) => g.installed).length;
-  $('#foot-stat').textContent = S.scanning ? 'Scanning…' : `${S.games.length} games · ${inst} installed`;
+  $('#foot-stat').textContent = S.scanning ? 'Scanning…' : `${c.all} games · ${c.installed} installed`;
 }
 
 function slide(c) {
@@ -199,70 +182,132 @@ function slide(c) {
   ind.style.setProperty('--w', `${on.offsetWidth}px`);
 }
 
-function renderChips() {
+function renderChips(html) {
   const chips = $('#chips');
-  const list = filtered(true);
-  const counts = new Map();
-  for (const g of list) for (const t of S.genres[g.id] || []) counts.set(t, (counts.get(t) || 0) + 1);
-  if (S.genre !== 'ALL' && !counts.has(S.genre)) S.genre = 'ALL';
-  const top = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 18);
   $$('.chip', chips).forEach((c) => c.remove());
-  chips.insertAdjacentHTML('beforeend',
-    `<button class="chip ${S.genre === 'ALL' ? 'on' : ''}" data-g="ALL">All<sup>${list.length}</sup></button>` +
-    top.map(([t, n]) => `<button class="chip ${t === S.genre ? 'on' : ''}" data-g="${esc(t)}">${esc(t)}<sup>${n}</sup></button>`).join(''));
+  chips.insertAdjacentHTML('beforeend', html);
   slide(chips);
 }
 
-/* ───────────────────────── rendering: grid ───────────────────────── */
+/* ───────────────────────── rendering: grid (virtual) ─────────────────────────
+ * Only the rows on screen (plus a few above and below) exist in the page. Cards that scroll out
+ * are removed together with their cover image, so the web view never holds hundreds of decoded
+ * covers at once – that used to grow to several GB with a big library. */
 
-function cardHTML(g, i) {
-  const a = S.art[g.id] || {};
-  const p = PLATFORMS[g.platform] || { name: g.platform };
-  const genre = (S.genres[g.id] || [])[0];
-  const meta = g.installed
-    ? `<i class="dot"></i>${esc(p.name)}${genre ? ' · ' + esc(genre) : ''}`
-    : `${esc(p.name)} · Not installed`;
-  const cover = a.cover
-    ? `<img class="cover ${loadedCovers.has(g.id) ? 'loaded' : ''}" src="${esc(api.src(a.cover))}" alt="" draggable="false" loading="lazy" decoding="async">`
-    : '';
-  return `<article class="card ${g.installed ? '' : 'missing'} ${S.selected === g.id ? 'sel' : ''}" data-id="${esc(g.id)}" style="--i:${Math.min(i, 26)};--h:${hue(g)}">
-    <div class="card-art">
-      <div class="gen"><b>${esc(g.name)}</b><small>${esc(p.name)}</small></div>
-      ${cover}
-      <div class="glare"></div>
-      ${favSet.has(g.id) ? `<span class="fav-badge">${IC.heart}</span>` : ''}
-      ${g.installed ? '' : `<span class="dl-badge">${IC.download}</span>`}
-      <button class="card-play" data-act="play" aria-label="${g.installed ? 'Play' : 'Install'}">${g.installed ? IC.play : IC.download}</button>
-    </div>
-    <div class="card-info"><b title="${esc(g.name)}">${esc(g.name)}</b><span>${meta}</span></div>
-  </article>`;
+const VG = { start: 0, end: -1, cols: 1, rowH: 300, padTop: 10, els: new Map(), raf: 0, firstRow: 0 };
+const ROW_GAP = 26;
+const COL_GAP = 20;
+const OVERSCAN = 2;
+const tpl = document.createElement('template');
+
+function measure() {
+  const cs = getComputedStyle(grid);
+  const inner = grid.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const card = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card')) || 176;
+  VG.cols = Math.max(1, Math.floor((inner + COL_GAP) / (card + COL_GAP)));
+  const cw = (inner - (VG.cols - 1) * COL_GAP) / VG.cols;
+  const sample = grid.querySelector('.card');
+  const h = sample ? sample.offsetHeight : cw * 1.5 + 58;
+  VG.rowH = Math.max(40, h) + ROW_GAP;
 }
 
-const coverObserver = new IntersectionObserver((entries) => {
-  for (const en of entries) {
-    if (!en.isIntersecting) continue;
-    coverObserver.unobserve(en.target);
-    enqueueArt(en.target.dataset.id, true);
+function makeCard(i, still) {
+  tpl.innerHTML = S.cards[i];
+  const el = tpl.content.firstElementChild;
+  const id = S.ids[i];
+  if (id === S.selected) el.classList.add('sel');
+  if (still) el.classList.add('na');
+  const cover = $('.cover', el);
+  if (cover && loadedCovers.has(id)) cover.classList.add('loaded');
+  return el;
+}
+
+/** Mounts the cards of the visible rows. `fresh`: rebuild everything (new filter or sorting). */
+function mountVisible(fresh) {
+  const n = S.ids.length;
+  if (!n) {
+    grid.replaceChildren();
+    VG.els = new Map();
+    grid.style.paddingTop = '';
+    grid.style.paddingBottom = '';
+    return;
   }
-}, { root: scroller, rootMargin: '320px' });
+  const rows = Math.ceil(n / VG.cols);
+  const top = grid.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop + VG.padTop;
+  const y0 = scroller.scrollTop - top;
+  const y1 = y0 + scroller.clientHeight;
+  const firstRow = Math.max(0, Math.min(rows - 1, Math.floor(y0 / VG.rowH) - OVERSCAN));
+  const lastRow = Math.max(firstRow, Math.min(rows - 1, Math.ceil(y1 / VG.rowH) + OVERSCAN));
+  const start = firstRow * VG.cols;
+  const end = Math.min(n, (lastRow + 1) * VG.cols) - 1;
+  if (!fresh && start === VG.start && end === VG.end) return;
+
+  const keep = new Map();
+  const want = [];
+  for (let i = start; i <= end; i++) {
+    const id = S.ids[i];
+    let el = fresh ? null : VG.els.get(id);
+    if (!el) el = makeCard(i, !fresh);
+    keep.set(id, el);
+    want.push(el);
+  }
+  // remove what scrolled away, then insert the new cards around the ones that stay
+  for (const [id, el] of VG.els) if (keep.get(id) !== el) el.remove();
+  let cursor = grid.firstElementChild;
+  for (const el of want) {
+    if (el === cursor) cursor = cursor.nextElementSibling;
+    else grid.insertBefore(el, cursor);
+  }
+  while (cursor) { const nx = cursor.nextElementSibling; cursor.remove(); cursor = nx; }
+
+  VG.els = keep;
+  VG.start = start;
+  VG.end = end;
+  VG.firstRow = firstRow;
+  grid.style.paddingTop = `${VG.padTop + firstRow * VG.rowH}px`;
+  grid.style.paddingBottom = `${48 + Math.max(0, rows - lastRow - 1) * VG.rowH}px`;
+  reportVisible();
+}
+
+let visT = 0;
+function reportVisible() {
+  clearTimeout(visT);
+  visT = setTimeout(() => {
+    const ids = S.ids.slice(VG.start, VG.end + 1);
+    if (ids.length) api.invoke('art_visible', { ids }).catch(() => {});
+  }, 120);
+}
 
 function renderGrid(still) {
-  const list = sortGames(filtered(false));
   grid.classList.toggle('still', !!still);
-  grid.innerHTML = list.map(cardHTML).join('');
-  cardEls = new Map($$('.card', grid).map((el) => [el.dataset.id, el]));
-  $('#empty').hidden = list.length > 0;
-  coverObserver.disconnect();
-  for (const g of list) {
-    const a = S.art[g.id];
-    if (!(a && (a.cover || a.coverTried))) coverObserver.observe(cardEls.get(g.id));
-  }
+  $('#empty').hidden = S.ids.length > 0;
+  grid.replaceChildren();
+  VG.els = new Map();
+  VG.start = 0; VG.end = -1;
+  measure();
+  mountVisible(true);
+  // the real card height is known once one card is in the page
+  const before = [VG.rowH, VG.cols];
+  measure();
+  if (Math.abs(before[0] - VG.rowH) > 1 || before[1] !== VG.cols) { VG.start = -1; mountVisible(false); }
 }
 
-function applyCover(id) {
-  const el = cardEls.get(id);
-  const a = S.art[id];
-  if (!el || !a?.cover || $('.cover', el)) return;
+function onScrollOrResize(remeasure) {
+  if (VG.raf) return;
+  VG.raf = requestAnimationFrame(() => {
+    VG.raf = 0;
+    if (remeasure) { measure(); VG.start = -1; }
+    mountVisible(false);
+  });
+}
+scroller.addEventListener('scroll', () => onScrollOrResize(false), { passive: true });
+new ResizeObserver(() => onScrollOrResize(true)).observe(scroller);
+
+function cardEl(id) { return VG.els.get(id); }
+
+function applyCover(id, url) {
+  const el = cardEl(id);
+  if (!el || !url || $('.cover', el)) return;
   const art = $('.card-art', el);
   const img = document.createElement('img');
   img.className = 'cover';
@@ -270,7 +315,14 @@ function applyCover(id) {
   img.loading = 'lazy';
   img.decoding = 'async';
   art.insertBefore(img, $('.glare', art));
-  img.src = api.src(a.cover);
+  img.src = url;
+}
+
+/** New HTML for one card (cover, favorite …): stored for later and patched in when it is on screen. */
+function updateCard(id, html, cover) {
+  const i = S.index.get(id);
+  if (i !== undefined && html) S.cards[i] = html;
+  if (cover) applyCover(id, cover);
 }
 
 grid.addEventListener('load', (e) => {
@@ -283,13 +335,13 @@ grid.addEventListener('load', (e) => {
 grid.addEventListener('click', (e) => {
   const card = e.target.closest('.card');
   if (!card) return;
-  const g = S.byId.get(card.dataset.id);
-  if (e.target.closest('[data-act="play"]')) { selectGame(g.id); play(g); return; }
-  selectGame(g.id, true);
+  const id = card.dataset.id;
+  if (e.target.closest('[data-act="play"]')) { selectGame(id); play(id); return; }
+  selectGame(id, true);
 });
 grid.addEventListener('dblclick', (e) => {
   const card = e.target.closest('.card');
-  if (card) play(S.byId.get(card.dataset.id));
+  if (card) play(card.dataset.id);
 });
 
 let tiltRaf = 0;
@@ -323,34 +375,32 @@ let heroShown = null;
 function selectGame(id, scrollUp) {
   S.selected = id;
   $$('.card.sel', grid).forEach((c) => c.classList.remove('sel'));
-  cardEls.get(id)?.classList.add('sel');
+  cardEl(id)?.classList.add('sel');
   renderHero();
-  ensureExtras(id);
   if (scrollUp && scroller.scrollTop > 40) scroller.scrollTo({ top: 0 });
 }
 
-function setHeroBg(g) {
-  const a = S.art[g.id] || {};
-  const key = `${g.id}|${a.hero || a.cover || ''}`;
+function setHeroBg(h) {
+  const key = `${h.id}|${h.bgUrl || ''}`;
   if (key === heroKey) return;
   heroKey = key;
   const bg = $('#hero-bg');
   const n = document.createElement('div');
-  if (a.hero) {
+  if (h.bgKind === 'hero') {
     n.className = 'hbg';
-    n.innerHTML = `<img src="${esc(api.src(a.hero))}" alt="" draggable="false">`;
-  } else if (a.cover) {
+    n.innerHTML = `<img src="${esc(h.bgUrl)}" alt="" draggable="false">`;
+  } else if (h.bgKind === 'blur') {
     n.className = 'hbg blur';
-    n.innerHTML = `<img src="${esc(api.src(a.cover))}" alt="" draggable="false">`;
+    n.innerHTML = `<img src="${esc(h.bgUrl)}" alt="" draggable="false">`;
   } else {
     n.className = 'hbg gen';
-    n.style.setProperty('--h', hue(g));
+    n.style.setProperty('--h', h.hue);
   }
   const old = [...bg.children];
   bg.appendChild(n);
   const show = () => {
     requestAnimationFrame(() => n.classList.add('in'));
-    setTimeout(() => old.forEach((o) => o.remove()), 800);
+    setTimeout(() => old.forEach((o) => { $('img', o)?.removeAttribute('src'); o.remove(); }), 800);
   };
   const img = $('img', n);
   if (img && !img.complete) {
@@ -367,16 +417,20 @@ function retrigger(el) {
   }
 }
 
-function renderHero() {
-  let g = S.byId.get(S.selected);
-  if (!g && S.games.length) {
-    g = sortGames(S.games.filter((x) => x.installed))[0] || sortGames(S.games)[0];
-    S.selected = g.id;
-    cardEls.get(g.id)?.classList.add('sel');
-  }
+let heroSeq = 0;
+async function renderHero() {
+  const seq = ++heroSeq;
+  const h = await api.invoke('hero_view', { id: S.selected });
+  if (seq !== heroSeq) return;
+  applyHero(h);
+}
+
+function applyHero(h) {
+  S.hero = h;
   const body = $('#hero-body');
   const play = $('#btn-play');
-  if (!g) {
+  if (!h) {
+    S.selected = null;
     $('#hero-status').innerHTML = '';
     $('#hero-title').hidden = false;
     $('#hero-title').textContent = 'No games yet';
@@ -389,47 +443,31 @@ function renderHero() {
     $('#btn-folder').disabled = true;
     return;
   }
-  const a = S.art[g.id] || {};
-  const p = PLATFORMS[g.platform] || { name: g.platform, color: '#fff' };
+  if (S.selected !== h.id) {
+    S.selected = h.id;
+    $$('.card.sel', grid).forEach((c) => c.classList.remove('sel'));
+    cardEl(h.id)?.classList.add('sel');
+  }
   const status = $('#hero-status');
-  status.className = `hero-status ${g.installed ? '' : 'missing'}`;
-  status.innerHTML = (a.icon ? `<img class="hero-icon" src="${esc(api.src(a.icon))}" alt="">` : '') + `<i class="dot"></i>${g.installed ? 'Installed' : 'Not installed'}`;
-  $('#hero-title').textContent = g.name;
-  $('#hero-title').hidden = !!a.logo;
+  status.className = `hero-status ${h.installed ? '' : 'missing'}`;
+  status.innerHTML = h.statusHtml;
+  $('#hero-title').textContent = h.name;
+  $('#hero-title').hidden = !!h.logo;
   const logo = $('#hero-logo');
-  logo.hidden = !a.logo;
-  if (a.logo) logo.src = api.src(a.logo);
+  logo.hidden = !h.logo;
+  if (h.logo) logo.src = h.logo; else logo.removeAttribute('src');
+  $('#hero-meta').innerHTML = h.metaHtml;
 
-  const pills = [`<span class="pill"><i style="--c:${p.color}"></i>${esc(p.name)}</span>`];
-  for (const t of (S.genres[g.id] || []).slice(0, 3)) pills.push(`<span class="pill">${esc(t)}</span>`);
-  if (g.playtimeMin) pills.push(`<span class="pill">${fmtPlay(g.playtimeMin)} played</span>`);
-  const lp = lastPlayed(g);
-  if (lp) pills.push(`<span class="pill">Last played ${ago(lp)}</span>`);
-  if (g.installed && g.sizeBytes) pills.push(`<span class="pill">${fmtSize(g.sizeBytes)}</span>`);
-  $('#hero-meta').innerHTML = pills.join('');
-
-  play.disabled = !g.installed && !g.installUri;
-  play.classList.toggle('install', !g.installed);
-  $('.bp-label', play).innerHTML = g.installed ? `${IC.play}PLAY` : `${IC.download}INSTALL`;
-  $('#btn-fav').classList.toggle('on', favSet.has(g.id));
+  play.disabled = !h.canPlay;
+  play.classList.toggle('install', !h.installed);
+  $('.bp-label', play).innerHTML = h.installed ? `${IC.play}PLAY` : `${IC.download}INSTALL`;
+  $('#btn-fav').classList.toggle('on', h.fav);
   $('#btn-fav').disabled = false;
-  $('#btn-folder').disabled = !(g.installed && g.installPath);
-  $('#hero-credit').textContent = a.hero || a.cover ? 'Artwork · SteamGridDB' : '';
+  $('#btn-folder').disabled = !h.folder;
+  $('#hero-credit').textContent = h.credit;
 
-  setHeroBg(g);
-  if (heroShown !== g.id) { heroShown = g.id; retrigger(body); }
-}
-
-async function ensureExtras(id) {
-  const g = S.byId.get(id);
-  if (!g || !S.settings.sgdbKey || S.art[id]?.extrasTried) return;
-  try {
-    const art = await api.invoke('fetch_extras', { id, name: g.name, steamAppid: g.steamAppid ?? null });
-    S.art[id] = { ...S.art[id], ...art };
-    applyCover(id);
-    if (S.selected === id) renderHero();
-    updateArtRow();
-  } catch { /* offline or invalid key – the generated art stays */ }
+  setHeroBg(h);
+  if (heroShown !== h.id) { heroShown = h.id; retrigger(body); }
 }
 
 $('#hero').addEventListener('pointermove', (e) => {
@@ -446,38 +484,34 @@ $('#hero').addEventListener('pointerleave', () => {
 
 /* ───────────────────────── actions ───────────────────────── */
 
-async function play(g) {
-  if (!g) return;
+/** Rust decides: start the game when it is installed, otherwise open its launcher to install it. */
+async function play(id) {
+  if (!id) return;
   const btn = $('#btn-play');
-  if (g.installed) {
+  const busy = () => {
     btn.classList.remove('busy');
     void btn.offsetWidth;
     btn.classList.add('busy');
     setTimeout(() => btn.classList.remove('busy'), 2500);
-    try {
-      const ts = await api.invoke('launch_game', { game: g });
-      S.settings.lastPlayed[g.id] = ts;
-      toast(`Launching ${g.name}…`);
-      renderNav();
-      if (S.selected === g.id) renderHero();
-      if (S.settings.minimizeOnLaunch) setTimeout(() => api.win.minimize(), 900);
-    } catch (e) { toast(String(e), 'err'); }
-  } else if (g.installUri) {
-    try {
-      await api.invoke('install_game', { game: g });
-      toast(`Opening ${PLATFORMS[g.platform]?.name ?? 'launcher'} to install ${g.name}`);
-    } catch (e) { toast(String(e), 'err'); }
-  } else {
-    toast(`Install ${g.name} from its launcher`, 'err');
-  }
+  };
+  if (S.hero?.id === id && S.hero.installed) busy();
+  try {
+    const r = await api.invoke('play_game', { id });
+    toast(r.message);
+    if (!r.launched) return;
+    S.settings.lastPlayed[id] = r.ts;
+    refresh(true, { grid: false });
+    if (S.selected === id) renderHero();
+    if (r.minimize) setTimeout(() => api.win.minimize(), 900);
+  } catch (e) { toast(String(e), 'err'); }
 }
 
-function toggleFav(id) {
-  if (favSet.has(id)) favSet.delete(id); else favSet.add(id);
-  S.settings.favorites = [...favSet];
-  saveSettings();
-  renderNav();
-  renderGrid(true);
+async function toggleFav(id) {
+  const on = await api.invoke('toggle_favorite', { id });
+  const favs = new Set(S.settings.favorites || []);
+  if (on) favs.add(id); else favs.delete(id);
+  S.settings.favorites = [...favs];
+  await refresh(true);
   renderHero();
   const b = $('#btn-fav');
   b.classList.remove('pop');
@@ -485,51 +519,20 @@ function toggleFav(id) {
   b.classList.add('pop');
 }
 
-$('#btn-play').addEventListener('click', () => play(S.byId.get(S.selected)));
+$('#btn-play').addEventListener('click', () => play(S.selected));
 $('#btn-fav').addEventListener('click', () => S.selected && toggleFav(S.selected));
 $('#btn-folder').addEventListener('click', () => {
-  const g = S.byId.get(S.selected);
-  if (g?.installPath) api.invoke('open_folder', { path: g.installPath }).catch((e) => toast(String(e), 'err'));
+  if (S.selected) api.invoke('open_game_folder', { id: S.selected }).catch((e) => toast(String(e), 'err'));
 });
 
-/* ───────────────────────── artwork queue (SteamGridDB) ───────────────────────── */
+/* ───────────────────────── artwork (downloaded by Rust in the background) ───────────────────────── */
 
-const artQ = [];
-const artPending = new Set();
-let artActive = 0;
-let artDead = false;
-
-function enqueueArt(id, front) {
-  if (!S.settings.sgdbKey || artDead || !S.byId.has(id)) return;
-  const a = S.art[id];
-  if (a && (a.cover || a.coverTried)) return;
-  if (artPending.has(id)) return;
-  artPending.add(id);
-  if (front) artQ.unshift(id); else artQ.push(id);
-  pumpArt();
-}
-
-function pumpArt() {
-  while (artActive < 3 && artQ.length) {
-    const id = artQ.shift();
-    artActive++;
-    fetchCover(id).finally(() => { artActive--; artPending.delete(id); pumpArt(); });
-  }
-}
-
-async function fetchCover(id) {
-  const g = S.byId.get(id);
-  if (!g) return;
-  try {
-    const path = await api.invoke('fetch_cover', { id, name: g.name, steamAppid: g.steamAppid ?? null });
-    S.art[id] = { ...(S.art[id] || {}), cover: path || undefined, coverTried: true };
-    if (path) {
-      applyCover(id);
-      if (S.selected === id) renderHero();
-    }
-  } catch (e) {
-    if (/API key/i.test(String(e))) { artDead = true; toast('SteamGridDB: invalid API key', 'err'); }
-  }
+function onArtUpdated({ id, cover, card, covered, tried, total }) {
+  S.counts.covered = covered;
+  S.counts.tried = tried;
+  S.counts.all = total;
+  updateCard(id, card, cover);
+  if (S.selected === id) renderHero();
   updateArtRow();
 }
 
@@ -568,9 +571,7 @@ function updateArtRow() {
     st.innerHTML = '<button data-open-settings>Add API key</button>';
     return;
   }
-  const total = S.games.length;
-  const covered = S.games.filter((g) => S.art[g.id]?.cover).length;
-  const tried = S.games.filter((g) => S.art[g.id]?.coverTried || S.art[g.id]?.cover).length;
+  const { all: total, covered, tried } = S.counts;
   const finished = total > 0 && tried >= total;
   row.className = `row art ${finished ? 'done' : 'run'}`;
   row.style.setProperty('--p', total ? tried / total : 0);
@@ -583,7 +584,7 @@ function showView(name) {
   $('#view-social').classList.toggle('on', name === 'social');
   $('#nav').classList.toggle('in-social', name === 'social');
   if (name === 'social') Social.onShow();
-  if (name === 'library') setTimeout(() => { slide($('#seg-install')); slide($('#chips')); }, 80);
+  if (name === 'library') setTimeout(() => { slide($('#seg-install')); slide($('#chips')); onScrollOrResize(true); }, 80);
 }
 
 async function runScan(overlay) {
@@ -599,14 +600,10 @@ async function runScan(overlay) {
     showView('scan');
   }
   try {
-    const games = await api.invoke('scan_library');
+    await api.invoke('scan_library'); // also starts genre lookups and cover downloads in Rust
     await scanChain;
-    setGames(games);
-    if (!S.byId.has(S.selected)) S.selected = null;
-    refresh(true);
+    await refresh(true);
     renderHero();
-    api.invoke('start_enrich');
-    sortGames(games).forEach((g) => enqueueArt(g.id, false));
   } catch (e) {
     toast(`Scan failed: ${e}`, 'err');
   } finally {
@@ -621,19 +618,12 @@ async function runScan(overlay) {
 
 /* ───────────────────────── glue ───────────────────────── */
 
-function refresh(still) {
-  renderNav();
-  renderChips();
-  renderGrid(still);
-}
-
 let chipT = 0;
-function onGenres({ id, genres }) {
-  S.genres[id] = genres;
+function onGenres() {
   clearTimeout(chipT);
   chipT = setTimeout(() => {
-    renderChips();
-    if (S.selected && S.byId.get(S.selected)) renderHero();
+    refresh(true, { grid: false });
+    if (S.selected) renderHero();
   }, 500);
 }
 
@@ -641,14 +631,14 @@ function onGenres({ id, genres }) {
 let searchT = 0;
 $('#q').addEventListener('input', (e) => {
   clearTimeout(searchT);
-  searchT = setTimeout(() => { S.q = e.target.value; renderChips(); renderGrid(true); }, 110);
+  searchT = setTimeout(() => { S.q = e.target.value; refresh(true); }, 110);
 });
 $('#q').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
-    const first = sortGames(filtered(false))[0];
-    if (first) { selectGame(first.id, true); e.target.blur(); }
+    const first = S.ids[0];
+    if (first) { selectGame(first, true); e.target.blur(); }
   }
-  if (e.key === 'Escape') { e.target.value = ''; S.q = ''; renderChips(); renderGrid(true); e.target.blur(); }
+  if (e.key === 'Escape') { e.target.value = ''; S.q = ''; refresh(true); e.target.blur(); }
 });
 
 $('#seg-install').addEventListener('click', (e) => {
@@ -667,13 +657,14 @@ $('#chips').addEventListener('click', (e) => {
   S.genre = b.dataset.g;
   $$('.chip').forEach((x) => x.classList.toggle('on', x === b));
   slide($('#chips'));
-  renderGrid(false);
+  refresh(false);
 });
 
-$('#sort').addEventListener('change', (e) => { S.sort = e.target.value; store.set('sort', S.sort); renderGrid(false); });
+$('#sort').addEventListener('change', (e) => { S.sort = e.target.value; store.set('sort', S.sort); refresh(false); });
 $('#zoom').addEventListener('input', (e) => {
   document.documentElement.style.setProperty('--card', `${e.target.value}px`);
   store.set('card', e.target.value);
+  onScrollOrResize(true);
 });
 
 $('#nav').addEventListener('click', (e) => {
@@ -687,8 +678,8 @@ $('#nav').addEventListener('click', (e) => {
     S.view = b.dataset.view;
     S.platform = null;
   }
-  refresh(false);
   scroller.scrollTo({ top: 0 });
+  refresh(false);
 });
 
 $('#btn-rescan').addEventListener('click', () => runScan(true));
@@ -756,6 +747,7 @@ function openSettings() {
   $('#set-minimize').checked = !!S.settings.minimizeOnLaunch;
   $('#set-local-server').checked = !S.settings.noLocalServer;
   $('#set-autoupdate').checked = !S.settings.noUpdateCheck;
+  $('#set-autoinstall').checked = !S.settings.noAutoInstall;
   $('#set-callsounds').checked = !S.settings.noCallSounds;
   $('#set-autowatch').checked = !S.settings.noAutoWatch;
   Updater.fillAbout();
@@ -829,13 +821,10 @@ $('#set-test').addEventListener('click', async () => {
 
 $('#set-clear-art').addEventListener('click', async () => {
   const n = await api.invoke('clear_art_cache');
-  S.art = {};
-  artQ.length = 0;
-  artPending.clear();
+  loadedCovers.clear();
   heroKey = '';
-  renderGrid(true);
+  await refresh(true);
   renderHero();
-  updateArtRow();
   toast(`Artwork cache cleared (${n} files). Covers reload as you scroll.`);
 });
 $('#set-open-data').addEventListener('click', () => api.invoke('open_data_folder').catch((e) => toast(String(e), 'err')));
@@ -849,6 +838,7 @@ $('#set-save').addEventListener('click', async () => {
   next.rsiPath = $('#set-rsi').value.trim();
   next.noLocalServer = !$('#set-local-server').checked;
   next.noUpdateCheck = !$('#set-autoupdate').checked;
+  next.noAutoInstall = !$('#set-autoinstall').checked;
   next.noCallSounds = !$('#set-callsounds').checked;
   next.noAutoWatch = !$('#set-autowatch').checked;
   next.micId = $('#dev-mic').value;
@@ -857,15 +847,14 @@ $('#set-save').addEventListener('click', async () => {
   S.settings = next;
   store.set('themeCache', JSON.stringify({ theme: next.theme, accent: next.accent, bgTone: next.bgTone, noMotion: next.noMotion }));
   applyTheme(next);
-  await api.invoke('save_settings', { settings: next });
+  S.settings = { ...next, ...(await api.invoke('save_settings', { settings: next })) };
   closeSettings();
   toast('Settings saved');
   Social.applyDevices();
   if (next.steamKey !== old.steamKey || next.rsiPath !== old.rsiPath) { runScan(true); return; }
   if (next.sgdbKey !== old.sgdbKey) {
-    artDead = false;
-    sortGames(S.games).forEach((g) => enqueueArt(g.id, false));
-    ensureExtras(S.selected);
+    // Rust restarts the cover downloads itself; the header asks for banner and logo again
+    renderHero();
     updateArtRow();
   }
 });
@@ -874,9 +863,14 @@ $('#set-save').addEventListener('click', async () => {
 const artUI = { game: null, kind: 'cover', cache: new Map(), busy: false };
 const ART_NAMES = { cover: 'Cover', hero: 'Banner', logo: 'Logo', icon: 'Icon' };
 
+function nameOf(id) {
+  if (S.hero?.id === id) return S.hero.name;
+  return $('.card-info b', cardEl(id) || document.createElement('i'))?.title || '';
+}
+
 function openArt(id) {
-  const g = S.byId.get(id);
-  if (!g) return;
+  const g = { id, name: nameOf(id) };
+  if (!g.name) return;
   artUI.game = g;
   artUI.kind = 'cover';
   $('#art-title').textContent = `ARTWORK · ${g.name.toUpperCase()}`;
@@ -893,8 +887,7 @@ function closeArt() {
 }
 
 function artCurrent() {
-  const a = S.art[artUI.game?.id] || {};
-  return { path: a[artUI.kind], custom: !!a[`${artUI.kind}Custom`] };
+  return api.invoke('art_current', { id: artUI.game.id, kind: artUI.kind }).catch(() => ({ url: null, custom: false }));
 }
 
 async function loadArtOptions() {
@@ -905,19 +898,19 @@ async function loadArtOptions() {
   grid.dataset.k = k;
   msg.className = 'art-msg';
   msg.textContent = '';
-  const cur = artCurrent();
+  const cur = await artCurrent();
   $('#art-reset').disabled = !cur.custom;
   grid.innerHTML = Array.from({ length: k === 'icon' ? 16 : 8 }, () => '<div class="art-skel"></div>').join('');
   try {
     const key = `${g.id}|${k}`;
     let opts = artUI.cache.get(key);
     if (!opts) {
-      opts = await api.invoke('list_art_options', { id: g.id, name: g.name, steamAppid: g.steamAppid ?? null, kind: k });
+      opts = await api.invoke('list_art_options', { id: g.id, kind: k });
       artUI.cache.set(key, opts);
     }
     if (artUI.game !== g || artUI.kind !== k) return; // user switched tab meanwhile
-    const current = cur.path
-      ? `<button class="art-opt cur" data-keep="1" title="Current ${ART_NAMES[k].toLowerCase()}${cur.custom ? ' (your choice)' : ''}"><img src="${esc(api.src(cur.path))}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>`
+    const current = cur.url
+      ? `<button class="art-opt cur" data-keep="1" title="Current ${ART_NAMES[k].toLowerCase()}${cur.custom ? ' (your choice)' : ''}"><img src="${esc(cur.url)}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>`
       : '';
     grid.innerHTML = current + opts.map((o, i) =>
       `<button class="art-opt" style="--i:${Math.min(i, 20)}" data-url="${esc(o.url)}" title="${esc([o.style, o.author && `by ${o.author}`].filter(Boolean).join(' · '))}"><img src="${esc(o.thumb)}" loading="lazy" alt=""><span>${o.width}×${o.height}</span></button>`).join('');
@@ -932,7 +925,7 @@ async function loadArtOptions() {
 }
 // shows only the current image when SteamGridDB can't be reached
 function current_(cur) {
-  return cur.path ? `<button class="art-opt cur" data-keep="1"><img src="${esc(api.src(cur.path))}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>` : '';
+  return cur.url ? `<button class="art-opt cur" data-keep="1"><img src="${esc(cur.url)}" alt=""><span>${cur.custom ? 'Yours' : 'Current'}</span></button>` : '';
 }
 
 async function applyArt(source, btn) {
@@ -942,8 +935,8 @@ async function applyArt(source, btn) {
   artUI.busy = true;
   btn?.classList.add('busy');
   try {
-    const art = await api.invoke('set_art', { id: g.id, kind: k, source });
-    afterArtChange(g.id, art, k);
+    const change = await api.invoke('set_art', { id: g.id, kind: k, source });
+    afterArtChange(g.id, change, k);
     toast(`${ART_NAMES[k]} updated for ${g.name}`);
     loadArtOptions();
   } catch (e) {
@@ -954,14 +947,13 @@ async function applyArt(source, btn) {
   }
 }
 
-function afterArtChange(id, art, kind) {
-  S.art[id] = { ...(S.art[id] || {}), ...art };
+function afterArtChange(id, change, kind) {
   if (kind === 'cover') {
-    $('.cover', cardEls.get(id) || document.createElement('i'))?.remove();
-    applyCover(id);
+    $('.cover', cardEl(id) || document.createElement('i'))?.remove();
+    loadedCovers.delete(id);
+    updateCard(id, change.card, change.cover);
   }
-  if (S.selected === id) renderHero();
-  updateArtRow();
+  if (S.selected === id && change.hero) applyHero(change.hero);
 }
 
 $('#btn-art').addEventListener('click', () => S.selected && openArt(S.selected));
@@ -997,9 +989,8 @@ $('#art-reset').addEventListener('click', async () => {
   const g = artUI.game;
   const k = artUI.kind;
   try {
-    const art = await api.invoke('reset_art', { id: g.id, kind: k });
-    afterArtChange(g.id, art, k);
-    if (k === 'cover') enqueueArt(g.id, true); else ensureExtras(g.id);
+    const change = await api.invoke('reset_art', { id: g.id, kind: k });
+    afterArtChange(g.id, change, k); // Rust fetches the automatic artwork again
     toast(`${ART_NAMES[k]} reset to automatic`);
     loadArtOptions();
   } catch (e) { toast(String(e), 'err'); }
@@ -1017,11 +1008,14 @@ grid.addEventListener('contextmenu', (e) => {
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && $('#art-modal').classList.contains('on')) closeArt();
 });
-/* ───────────────────────── updates ───────────────────────── */
+/* ───────────────────────── updates ─────────────────────────
+ * Rust checks GitHub shortly after the start and every 6 hours, downloads a new version in the
+ * background and installs it silently when Nexus is closed. This bar only shows what happens. */
 
 const Updater = {
   info: null,
   busy: false,
+  ready: false,
   async fillAbout() {
     try { $('#about-ver').textContent = `v${await api.invoke('app_version')}`; } catch { $('#about-ver').textContent = ''; }
   },
@@ -1033,8 +1027,9 @@ const Updater = {
       const info = await api.invoke('check_update');
       this.info = info;
       if (info.available) {
-        this.setStatus(`Version ${info.latest} is available`);
-        if (manual || info.latest !== S.settings.skipVersion) this.show(info);
+        this.setStatus(this.ready ? `Version ${info.latest} is ready to install` : `Version ${info.latest} is available`);
+        if (this.ready) this.showReady(info);
+        else if (manual || info.latest !== S.settings.skipVersion) this.show(info);
       } else {
         this.setStatus(`You have the latest version (v${info.current})`);
         if (manual) toast(`Nexus is up to date (v${info.current})`);
@@ -1044,10 +1039,12 @@ const Updater = {
       if (manual) toast(String(e), 'err');
     }
   },
+  firstLine(info) {
+    return (info.notes || '').split('\n').map((l) => l.replace(/[#*`]/g, '').trim()).find((l) => l) || `You have v${info.current}`;
+  },
   show(info) {
-    const firstLine = (info.notes || '').split('\n').map((l) => l.replace(/[#*`]/g, '').trim()).find((l) => l) || `You have v${info.current}`;
     $('#ub-title').textContent = `Nexus ${info.latest} is available`;
-    $('#ub-sub').textContent = firstLine;
+    $('#ub-sub').textContent = this.firstLine(info);
     $('#ub-progress').hidden = true;
     $('#ub-install .bp-label').textContent = 'INSTALL NOW';
     $('#ub-install').disabled = false;
@@ -1055,15 +1052,28 @@ const Updater = {
     $('#ub-skip').hidden = false;
     $('#update-bar').hidden = false;
   },
+  /** Downloaded and verified: installs by itself when Nexus closes, or right away with a restart. */
+  showReady(info) {
+    this.ready = true;
+    $('#ub-title').textContent = `Nexus ${info.latest} is ready`;
+    $('#ub-sub').textContent = 'Installs automatically when you close Nexus – or restart now.';
+    $('#ub-progress').hidden = true;
+    $('#ub-install .bp-label').textContent = 'RESTART NOW';
+    $('#ub-install').disabled = false;
+    $('#ub-later').hidden = false;
+    $('#ub-skip').hidden = true;
+    $('#update-bar').hidden = false;
+    this.setStatus(`Version ${info.latest} is ready to install`);
+  },
   hide() { $('#update-bar').hidden = true; },
   async install() {
     if (this.busy) return;
     this.busy = true;
     $('#ub-install').disabled = true;
-    $('#ub-install .bp-label').textContent = 'DOWNLOADING…';
+    $('#ub-install .bp-label').textContent = this.ready ? 'RESTARTING…' : 'DOWNLOADING…';
     $('#ub-later').hidden = true;
     $('#ub-skip').hidden = true;
-    $('#ub-progress').hidden = false;
+    $('#ub-progress').hidden = this.ready;
     try {
       await api.invoke('install_update');
       $('#ub-install .bp-label').textContent = 'RESTARTING…';
@@ -1071,7 +1081,7 @@ const Updater = {
     } catch (e) {
       this.busy = false;
       toast(String(e), 'err');
-      this.show(this.info);
+      if (this.info) this.show(this.info);
     }
   },
   init() {
@@ -1082,14 +1092,25 @@ const Updater = {
       this.hide();
     });
     $('#upd-check').addEventListener('click', () => this.check(true));
+    api.listen('update-available', (e) => {
+      this.info = e.payload;
+      this.setStatus(`Version ${e.payload.latest} is available`);
+      // with automatic installation the bar appears once the download is ready
+      if (S.settings.noAutoInstall && !this.busy && !this.ready) this.show(e.payload);
+    });
+    api.listen('update-ready', (e) => { this.info = e.payload; if (!this.busy) this.showReady(e.payload); });
+    api.listen('update-error', (e) => this.setStatus(String(e.payload)));
     api.listen('update-progress', (e) => {
+      if (!this.busy) return; // background downloads stay quiet
       const { done, total } = e.payload;
       $('#ub-progress').style.setProperty('--p', `${total ? Math.min(100, (done / total) * 100) : 0}%`);
       $('#ub-sub').textContent = total ? `${(done / 1e6).toFixed(1)} of ${(total / 1e6).toFixed(1)} MB` : `${(done / 1e6).toFixed(1)} MB`;
     });
-    // check shortly after startup, then every 6 hours
-    setTimeout(() => { if (!S.settings.noUpdateCheck) this.check(false); }, 8000);
-    setInterval(() => { if (!S.settings.noUpdateCheck && !this.busy) this.check(false); }, 6 * 3600 * 1000);
+    if (window.__TAURI__) {
+      api.invoke('update_ready').then((v) => {
+        if (v) this.showReady({ latest: v, notes: '', current: '' });
+      }).catch(() => {});
+    }
   },
 };
 /* ───────────────────────── memory: minimized or hidden ───────────────────────── */
@@ -1208,31 +1229,29 @@ async function boot() {
   progress(12, 'Starting');
   restorePrefs();
   await api.listen('scan-progress', (e) => { scanChain = scanChain.then(() => onProgress(e.payload)); });
-  await api.listen('genres-updated', (e) => onGenres(e.payload));
-  await api.listen('art-optimized', (e) => {
-    S.art = e.payload || S.art;
+  await api.listen('genres-updated', () => onGenres());
+  await api.listen('art-updated', (e) => onArtUpdated(e.payload));
+  await api.listen('art-error', (e) => toast(String(e.payload), 'err'));
+  await api.listen('hero-updated', (e) => { if (e.payload?.id === S.selected) applyHero(e.payload); });
+  await api.listen('library-changed', async () => {
     loadedCovers.clear();
-    renderGrid(true);
+    await refresh(true);
     renderHero();
   });
 
   progress(34, 'Loading library');
-  const b = await api.invoke('bootstrap');
+  const b = await api.invoke('bootstrap', { artBase: T ? api.src('', 'art') : null });
   S.settings = { ...S.settings, ...b.settings };
   if (!S.settings.theme) S.settings.theme = 'neon';
   if (!S.settings.bgTone) S.settings.bgTone = 'black';
   applyTheme(S.settings);
-  favSet = new Set(S.settings.favorites || []);
-  S.art = b.art || {};
-  S.genres = b.genres || {};
-  setGames(b.library || []);
   progress(66, 'Preparing games');
   Social.init();
   Updater.init();
-  refresh(true);
+  await refresh(true);
   renderHero();
 
-  const hasLibrary = S.games.length > 0;
+  const hasLibrary = b.hasLibrary;
   if (!hasLibrary) { buildScanRows(); updateArtRow(); showView('scan'); }
   $$('.nav-item').forEach((el, i) => el.style.setProperty('--n', i));
 
@@ -1248,71 +1267,11 @@ async function boot() {
   store.set('introSeen', '1');
   slide($('#seg-install'));
   slide($('#chips'));
-  if (hasLibrary && S.settings.skipStartupScan) {
-    api.invoke('start_enrich');
-    sortGames(S.games).forEach((g) => enqueueArt(g.id, false));
-  } else runScan(!hasLibrary);
+  // without a scan Rust starts genre lookups and cover downloads by itself
+  if (!(hasLibrary && S.settings.skipStartupScan)) runScan(!hasLibrary);
 
   if (!S.settings.sgdbKey) {
     setTimeout(() => toast('Add a free SteamGridDB key to load cover art', '', { label: 'Open settings', fn: openSettings }), 3200);
   }
 }
 boot().catch((e) => { console.error(e); toast(`Startup error: ${e}`, 'err'); $('#splash').classList.add('out'); });
-
-/* ───────────────────────── browser mock (UI preview without Rust) ───────────────────────── */
-
-function makeMock() {
-  const subs = {};
-  const emit = (n, p) => (subs[n] || []).forEach((f) => f({ payload: p }));
-  const demo = [
-    ['Neon Drift', 'steam', 1, ['Racing', 'Indie']], ['Ashen Crown', 'epic', 1, ['Action', 'RPG']],
-    ['Void Runners', 'gog', 1, ['Action', 'Indie']], ['Ironhold', 'gog', 0, ['Strategy']],
-    ['Deep Signal', 'epic', 1, ['Adventure']], ['Pixel Harbor', 'steam', 1, ['Indie', 'Simulation']],
-    ['Redline Apex', 'ubisoft', 1, ['Racing', 'Sports']], ['Hollow Saints', 'steam', 0, ['Action', 'Adventure']],
-    ['Orbit Colony', 'gog', 1, ['Strategy', 'Simulation']], ['Frostline', 'battlenet', 1, ['Strategy']],
-    ['Mossheart', 'steam', 0, ['Adventure', 'Indie']], ['Tidebreaker', 'epic', 0, ['RPG', 'Action']],
-    ['Cinder Vale', 'ea', 1, ['Adventure']], ['Night Courier', 'steam', 1, ['Indie']],
-    ['Gravity Well', 'steam', 0, ['Simulation']], ['Static Bloom', 'epic', 1, ['Indie', 'Adventure']],
-    ['Rust Kingdom', 'steam', 1, ['Strategy', 'RPG']], ['Skyline Rush', 'ubisoft', 0, ['Racing']],
-    ['Star Citizen', 'rsi', 1, ['Simulation', 'Action', 'MMO']],
-  ];
-  const games = demo.map(([name, platform, inst], i) => ({
-    id: `${platform}:${i}`, name, platform, installed: !!inst, installPath: `C:\\Games\\${name}`,
-    launchUri: 'x://', installUri: 'x://i', steamAppid: null, sizeBytes: (8 + i * 3) * 1e9, playtimeMin: inst ? i * 95 : null,
-  }));
-  let settings = { sgdbKey: '', steamKey: '', favorites: [], lastPlayed: {} };
-  return {
-    src: (p) => p,
-    win: { minimize() {}, toggleMaximize() {}, close() {} },
-    listen: async (n, f) => { (subs[n] ||= []).push(f); return () => {}; },
-    async invoke(cmd, args) {
-      switch (cmd) {
-        case 'bootstrap': return { settings, library: [], art: {}, genres: {} };
-        case 'scan_library':
-          for (const p of Object.keys(PLATFORMS)) {
-            emit('scan-progress', { platform: p, state: 'running', count: 0 });
-            await sleep(250);
-            emit('scan-progress', { platform: p, state: 'done', count: games.filter((g) => g.platform === p).length });
-          }
-          return games;
-        case 'start_enrich':
-          games.forEach((g, i) => setTimeout(() => emit('genres-updated', { id: g.id, genres: demo[i][3] }), 700 + i * 140));
-          return null;
-        case 'save_settings': settings = args.settings; return null;
-        case 'launch_game': return Math.floor(Date.now() / 1000);
-        case 'fetch_cover': return null;
-        case 'fetch_extras': return {};
-        case 'test_sgdb_key': return 'Key works (mock)';
-        case 'clear_art_cache': return 0;
-        case 'app_version': return '0.0.0';
-        case 'check_update': return { available: false, current: '0.0.0', latest: '0.0.0', notes: '' };
-        case 'server_status': return { running: true, address: '127.0.0.1:7777', hasBinary: true, internet: false };
-        case 'list_art_options': return [];
-        case 'set_art': return {};
-        case 'reset_art': return {};
-        case 'open_data_folder': return null;
-        default: return null;
-      }
-    },
-  };
-}

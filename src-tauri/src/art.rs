@@ -133,7 +133,17 @@ pub fn optimize(kind: &str, bytes: &[u8], orig_ext: &'static str) -> (Vec<u8>, &
         imageops::FilterType,
         ExtendedColorType, ImageEncoder,
     };
-    let Ok(img) = image::load_from_memory(bytes) else {
+    // never allocate more than 160 MB for one picture (a huge PNG used to need GBs while decoding)
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(160 * 1024 * 1024);
+    let reader = match image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
+        Ok(mut r) => {
+            r.limits(limits);
+            r
+        }
+        Err(_) => return (bytes.to_vec(), orig_ext),
+    };
+    let Ok(img) = reader.decode() else {
         return (bytes.to_vec(), orig_ext);
     };
     let (max_w, max_h, png) = match kind {

@@ -572,6 +572,7 @@ window.Social = (() => {
         if (!buf) {
           const data = await (await fetch(api.src(item.path))).arrayBuffer();
           buf = await c.decodeAudioData(data);
+          if (sfxBuffers.size >= 12) sfxBuffers.delete(sfxBuffers.keys().next().value);
           sfxBuffers.set(item.path, buf);
         }
         const s = c.createBufferSource();
@@ -683,11 +684,26 @@ window.Social = (() => {
     stopTone();
     if (V.calling) { clearTimeout(V.calling.timer); V.calling = null; }
     Object.assign(V, { room: null, local: null, camTrack: null, screen: null, mix: null, muted: false, deaf: false, previewCam: null, previewScreen: null });
+    for (const el of V.tiles.values()) dropTile(el);
     $('#vgrid').innerHTML = '';
     $('#sfx-panel').hidden = true;
     V.tiles.clear();
+    sfxBuffers.clear();
+    // the audio engine runs its own thread: close it a moment after the call (leave sound first)
+    setTimeout(() => {
+      if (V.room || !V.ctx || toneTimer) return;
+      try { V.ctx.close(); } catch { /* ignore */ }
+      V.ctx = null;
+    }, 2500);
     renderCall(); renderVoiceList(); renderPeople();
     if (msg) toast(msg, 'err');
+  }
+
+  /** Removes a video tile and releases the stream it showed. */
+  function dropTile(el) {
+    if (!el) return;
+    for (const v of el.querySelectorAll('video')) { v.pause(); v.srcObject = null; }
+    el.remove();
   }
 
   function closePeer(p) {
@@ -896,7 +912,7 @@ window.Social = (() => {
     V.peers.delete(conn);
     V.stops.get(conn)?.();
     V.stops.delete(conn);
-    for (const key of [conn, `${conn}:s`]) { V.tiles.get(key)?.remove(); V.tiles.delete(key); }
+    for (const key of [conn, `${conn}:s`]) { dropTile(V.tiles.get(key)); V.tiles.delete(key); }
     uiSound('leave');
     renderCall();
   }
@@ -975,7 +991,7 @@ window.Social = (() => {
 
   async function startScreen() {
     try {
-      const s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30 } }, audio: true });
+      const s = await navigator.mediaDevices.getDisplayMedia({ video: { width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 30, max: 30 } }, audio: true });
       const vt = s.getVideoTracks()[0];
       vt.contentHint = 'motion';
       vt.onended = () => stopScreen();
@@ -1095,7 +1111,7 @@ window.Social = (() => {
       ensureTile(conn, p.user, false);
       if (p.state.screen) { want.add(`${conn}:s`); ensureTile(`${conn}:s`, `${p.user} is sharing their screen`, false); }
     }
-    for (const key of [...V.tiles.keys()]) if (!want.has(key)) { V.tiles.get(key).remove(); V.tiles.delete(key); }
+    for (const key of [...V.tiles.keys()]) if (!want.has(key)) { dropTile(V.tiles.get(key)); V.tiles.delete(key); }
     for (const key of V.tiles.keys()) updateTile(key);
     renderCallBar();
   }
