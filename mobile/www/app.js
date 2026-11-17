@@ -558,14 +558,15 @@ function syncTracks(peer) {
 function routeVideo(peer) {
   const m = peer.remoteMids;
   if (!m) return;
-  const live = new Set(peer.videoTracks.values());
-  for (const s of [peer.camStream, peer.screenStream]) for (const t of s.getTracks()) if (!live.has(t)) s.removeTrack(t);
+  // the announced mids can change after a renegotiation: rebuild both streams from scratch so no stale (muted) track stays behind
+  const want = { cam: new Set(), screen: new Set() };
   for (const [mid, track] of peer.videoTracks) {
-    const target = String(mid) === m.screen ? peer.screenStream : String(mid) === m.cam ? peer.camStream : null;
-    if (!target) continue;
-    const other = target === peer.screenStream ? peer.camStream : peer.screenStream;
-    if (other.getTracks().includes(track)) other.removeTrack(track);
-    if (!target.getTracks().includes(track)) target.addTrack(track);
+    if (String(mid) === m.screen) want.screen.add(track);
+    else if (String(mid) === m.cam) want.cam.add(track);
+  }
+  for (const [stream, set] of [[peer.camStream, want.cam], [peer.screenStream, want.screen]]) {
+    for (const t of stream.getTracks()) if (!set.has(t)) stream.removeTrack(t);
+    for (const t of set) if (!stream.getTracks().includes(t)) stream.addTrack(t);
   }
   renderStage();
 }
