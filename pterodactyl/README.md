@@ -51,14 +51,23 @@ Server → Startup, set:
 | Variable       | Recommendation                                                     |
 | -------------- | ------------------------------------------------------------------ |
 | Invite code    | A secret code – only people who know it can create accounts        |
-| Enable TURN    | `1` if you allocated the UDP ports                                 |
+| Enable TURN    | Switch (1 = on) if you allocated the UDP ports                     |
 | TURN port      | Must match an allocated UDP port (default 3478)                    |
 | Relay min/max  | Must match the allocated UDP range                                 |
 | Public IP      | **The node's public IP** – inside Docker the auto-detected address is wrong and TURN would not work. Leave empty only if TURN is off |
 
+The **Startup Command** must be exactly:
+
+```
+/usr/local/bin/nexus-entrypoint.sh
+```
+
+That script reads the port from the panel (`SERVER_PORT` = the **primary** allocation on the Network tab) and composes all flags from the variables – never hardcode a port into the startup command.
+
 Then start the server. The console should show:
 
 ```
+nexus-server --bind 0.0.0.0:7777 --data nexus-data --turn --turn-port 3478 --relay-min 49160 --relay-max 49200
 Nexus Server 0.5.1 listening on http://0.0.0.0:7777  (data: nexus-data)
   TURN relay: UDP 3478, relay ports 49160-49200
 ```
@@ -66,6 +75,12 @@ Nexus Server 0.5.1 listening on http://0.0.0.0:7777  (data: nexus-data)
 All accounts, rooms and the TURN secret live in `nexus-data/` inside the server volume and survive reinstalls and restarts.
 
 Friends connect with `http://<node ip or domain>:<TCP port>` under *Chat & Voice → Server* in the launcher. Remember the connection itself is **not encrypted** (HTTP/WebSocket) – use a password you use nowhere else, put the panel port behind a proxy/reverse proxy, or use a VPN.
+
+## Troubleshooting
+
+- **Console shows `listening on http://127.0.0.1:7777` no matter what port you allocated**: the startup command is not the entrypoint (empty or edited). Set Startup Command to `/usr/local/bin/nexus-entrypoint.sh`, save, restart. The port always comes from the **primary** allocation (Network tab → make the right allocation primary).
+- **"The selected value is invalid" on the TURN switch**: that's a bug in egg versions before this one (`string` + `in:0,1` made the panel save `true`/`false`). Re-import this egg version; the switch now saves 1/0.
+- **Voice/video fails across networks**: check `PUBLIC_IP` (must be the node's public IP), that the UDP ports are allocated to this server and match the variables, and that no firewall blocks UDP.
 
 ## Updating
 
@@ -76,7 +91,9 @@ When a new image is published (push to `main` or a new tag), reinstall the serve
 ```bash
 docker run --rm -p 7777:7777 -p 3478:3478/udp \
   -v nexus-data:/home/container/nexus-data \
-  -e INVITE_CODE=secret \
+  -e SERVER_PORT=7777 -e INVITE_CODE=secret -e PUBLIC_IP=203.0.113.7 \
   ghcr.io/lioner2008/nexus-server:latest \
-  /usr/local/bin/nexus-server --bind 0.0.0.0:7777 --data nexus-data --turn --invite secret
+  /usr/local/bin/nexus-entrypoint.sh
 ```
+
+`TURN_ENABLED=0` disables the relay; `TURN_PORT`, `RELAY_MIN`, `RELAY_MAX` override the defaults.

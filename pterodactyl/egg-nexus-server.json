@@ -4,16 +4,16 @@
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-11-17T12:00:00+00:00",
+    "exported_at": "2026-11-17T14:30:00+00:00",
     "name": "Nexus Server",
     "author": "lioner2008@users.noreply.github.com",
-    "description": "Nexus social server: accounts, text chat, voice/video call signaling and a built-in TURN relay for the Nexus game launcher.\r\n\r\n- Main TCP port: {{SERVER_PORT}} (default 7777)\r\n- Optional TURN relay: UDP TURN_PORT (default 3478) and UDP relay ports RELAY_MIN-RELAY_MAX (default 49160-49200)\r\n\r\nAllocate the UDP ports to the server and set PUBLIC_IP to the node's public address so calls work across networks.",
+    "description": "Nexus social server: accounts, text chat, voice/video call signaling and a built-in TURN relay for the Nexus game launcher.\r\n\r\nThe server listens on the primary allocation (SERVER_PORT).\r\n- Optional TURN relay: UDP TURN_PORT (default 3478) and UDP relay ports RELAY_MIN-RELAY_MAX (default 49160-49200)\r\n\r\nAllocate the UDP ports to the server and set PUBLIC_IP to the node's public address so calls work across networks.",
     "features": null,
     "docker_images": {
         "ghcr.io/lioner2008/nexus-server:latest": "ghcr.io/lioner2008/nexus-server:latest"
     },
     "file_denylist": [],
-    "startup": "TURN=\"\"; [ \"${TURN_ENABLED}\" = \"1\" ] && TURN=\"--turn --turn-port ${TURN_PORT} --relay-min ${RELAY_MIN} --relay-max ${RELAY_MAX}\"; INVITE=\"\"; [ -n \"${INVITE_CODE}\" ] && INVITE=\"--invite ${INVITE_CODE}\"; PUBIP=\"\"; [ -n \"${PUBLIC_IP}\" ] && PUBIP=\"--public-ip ${PUBLIC_IP}\"; exec /usr/local/bin/nexus-server --bind 0.0.0.0:{{SERVER_PORT}} --data nexus-data ${TURN} ${INVITE} ${PUBIP}",
+    "startup": "/usr/local/bin/nexus-entrypoint.sh",
     "config": {
         "files": "{}",
         "startup": "{\r\n    \"done\": \"listening on http://\"\r\n}",
@@ -40,12 +40,12 @@
         },
         {
             "name": "Enable TURN relay",
-            "description": "1 = start the built-in TURN relay so voice/video calls work even behind strict NATs. Requires the UDP ports TURN_PORT and RELAY_MIN-RELAY_MAX to be allocated to this server. 0 = signaling only (calls only work peer-to-peer).",
+            "description": "Switch: on (1) starts the built-in TURN relay so voice/video calls work even behind strict NATs. Requires the UDP ports TURN_PORT and RELAY_MIN-RELAY_MAX to be allocated to this server. Off (0) = signaling only (calls only work peer-to-peer).",
             "env_variable": "TURN_ENABLED",
             "default_value": "1",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "required|string|in:0,1",
+            "rules": "required|in:0,1",
             "field_type": "text"
         },
         {

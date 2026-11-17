@@ -14,6 +14,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -m -u 1000 container
 COPY --from=builder /build/target/release/nexus-server /usr/local/bin/nexus-server
+COPY nexus-entrypoint.sh /usr/local/bin/nexus-entrypoint.sh
+RUN chmod +x /usr/local/bin/nexus-entrypoint.sh
 # Pterodactyl mounts the server volume at /home/container and runs the startup
 # command as the image user.
 USER container
