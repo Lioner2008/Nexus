@@ -12,7 +12,11 @@
 //!   --public-ip IP    public address of this PC (found via UPnP when omitted)
 //!   --turn-port N / --relay-min N / --relay-max N   change the relay ports
 //!
-//! Environment: NEXUS_BIND, NEXUS_DATA, NEXUS_INVITE, NEXUS_TURN_URL / _USER / _PASS (an external TURN server).
+//! Every option can also be set through the environment (the command line wins): NEXUS_BIND, NEXUS_DATA,
+//! NEXUS_INVITE, NEXUS_TURN=1, NEXUS_UPNP=1, NEXUS_PUBLIC_IP, NEXUS_TURN_PORT, NEXUS_RELAY_MIN, NEXUS_RELAY_MAX.
+//! NEXUS_TURN_URL / _USER / _PASS add an external TURN server. The Pterodactyl egg in pterodactyl/ uses
+//! these variables. --public-ip / NEXUS_PUBLIC_IP also accept a host name; on Pterodactyl the allocation
+//! address (SERVER_IP) is used when it is a public one and nothing else is given.
 //!
 //! Voice and video never pass through this server: it only forwards the WebRTC
 //! offers/answers/ICE candidates, the audio and video flow peer-to-peer (or via the TURN relay).
@@ -164,8 +168,65 @@ fn arg(name: &str) -> Option<String> {
 fn flag(name: &str) -> bool {
     std::env::args().any(|x| x == name)
 }
-fn num(name: &str, default: u16) -> u16 {
-    arg(name).and_then(|v| v.parse().ok()).unwrap_or(default)
+/// `--name VALUE` on the command line, else the environment variable `env`; empty values count as unset.
+fn setting(name: &str, env: &str) -> Option<String> {
+    arg(name)
+        .or_else(|| std::env::var(env).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+/// `--name` on the command line, or `env` set to 1 / true / yes / on.
+fn switch(name: &str, env: &str) -> bool {
+    flag(name)
+        || matches!(
+            std::env::var(env).ok().map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+}
+fn number(name: &str, env: &str, default: u16) -> u16 {
+    setting(name, env).and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// An IP address, or a host name that is looked up (IPv4 preferred).
+fn resolve_ip(s: &str) -> Option<IpAddr> {
+    if let Ok(ip) = s.parse() {
+        return Some(ip);
+    }
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<IpAddr> = (s, 0).to_socket_addrs().ok()?.map(|a| a.ip()).collect();
+    addrs.iter().copied().find(IpAddr::is_ipv4).or_else(|| addrs.first().copied())
+}
+
+const USAGE: &str = "\
+nexus-server [--bind 127.0.0.1:7777] [--data nexus-data] [--invite CODE]
+             [--turn] [--turn-port 3478] [--relay-min 49160] [--relay-max 49200]
+             [--upnp] [--public-ip IP-OR-HOST]
+
+Every option can also be set through the environment: NEXUS_BIND, NEXUS_DATA, NEXUS_INVITE,
+NEXUS_TURN=1, NEXUS_TURN_PORT, NEXUS_RELAY_MIN, NEXUS_RELAY_MAX, NEXUS_UPNP=1, NEXUS_PUBLIC_IP.
+External TURN server: NEXUS_TURN_URL, NEXUS_TURN_USER, NEXUS_TURN_PASS.";
+
+/// SIGINT (Ctrl+C) and, on Unix, SIGTERM (docker stop, Pterodactyl).
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Shared secret for the TURN credentials, created once and kept in the data folder.
@@ -187,27 +248,33 @@ fn turn_secret(data: &PathBuf) -> String {
 
 #[tokio::main]
 async fn main() {
-    let bind: SocketAddr = arg("--bind")
-        .or_else(|| std::env::var("NEXUS_BIND").ok())
+    if flag("--version") || flag("-V") {
+        println!("nexus-server {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    if flag("--help") || flag("-h") {
+        println!("Nexus Server {}\n\n{USAGE}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+    let bind: SocketAddr = setting("--bind", "NEXUS_BIND")
         .unwrap_or_else(|| "127.0.0.1:7777".into())
         .parse()
         .expect("invalid --bind address, e.g. 127.0.0.1:7777");
-    let data = PathBuf::from(
-        arg("--data")
-            .or_else(|| std::env::var("NEXUS_DATA").ok())
-            .unwrap_or_else(|| "nexus-data".into()),
-    );
-    let invite = arg("--invite")
-        .or_else(|| std::env::var("NEXUS_INVITE").ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let data = PathBuf::from(setting("--data", "NEXUS_DATA").unwrap_or_else(|| "nexus-data".into()));
+    let invite = setting("--invite", "NEXUS_INVITE");
 
     // ── internet play: UPnP port forwarding + TURN relay
-    let (want_turn, want_upnp) = (flag("--turn"), flag("--upnp"));
-    let turn_port = num("--turn-port", 3478);
-    let (rmin, rmax) = (num("--relay-min", 49160), num("--relay-max", 49200));
+    let (want_turn, want_upnp) = (switch("--turn", "NEXUS_TURN"), switch("--upnp", "NEXUS_UPNP"));
+    let turn_port = number("--turn-port", "NEXUS_TURN_PORT", 3478);
+    let (rmin, rmax) = (number("--relay-min", "NEXUS_RELAY_MIN", 49160), number("--relay-max", "NEXUS_RELAY_MAX", 49200));
     let local_ip = net::local_ipv4();
-    let mut public_ip: Option<IpAddr> = arg("--public-ip").and_then(|s| s.parse().ok());
+    let mut public_ip: Option<IpAddr> = None;
+    if let Some(s) = setting("--public-ip", "NEXUS_PUBLIC_IP") {
+        public_ip = resolve_ip(&s);
+        if public_ip.is_none() {
+            eprintln!("Nexus Server: --public-ip {s}: not an IP address and the name could not be resolved, ignoring it");
+        }
+    }
     let mut upnp_info = UpnpInfo { enabled: want_upnp, ..Default::default() };
     let mut upnp: Option<Upnp> = None;
     if want_upnp {
@@ -231,11 +298,21 @@ async fn main() {
         }
     }
 
+    // Pterodactyl (Wings) passes the address of the server's allocation; use it when it is public.
+    if public_ip.is_none() {
+        if let Some(ip) = std::env::var("SERVER_IP").ok().and_then(|s| s.trim().parse::<IpAddr>().ok()) {
+            if !ip.is_unspecified() && !net::is_unroutable(ip) {
+                public_ip = Some(ip);
+            }
+        }
+    }
+
     let secret = turn_secret(&data);
     let mut turn_info = TurnInfo { enabled: want_turn, port: turn_port, relay: format!("{rmin}-{rmax}"), ..Default::default() };
     let mut turn_server = None;
+    let mut relay_ip = IpAddr::from([127, 0, 0, 1]);
     if want_turn {
-        let relay_ip = public_ip.or(local_ip.map(IpAddr::V4)).unwrap_or(IpAddr::from([127, 0, 0, 1]));
+        relay_ip = public_ip.or(local_ip.map(IpAddr::V4)).unwrap_or(relay_ip);
         match net::start_turn(&secret, turn_port, relay_ip, rmin, rmax).await {
             Ok(s) => {
                 turn_info.ok = true;
@@ -301,6 +378,9 @@ async fn main() {
     }
     if want_turn {
         println!("  TURN relay: {}", if turn_info.ok { format!("UDP {turn_port}, relay ports {rmin}-{rmax}") } else { turn_info.message.clone() });
+        if turn_info.ok && net::is_unroutable(relay_ip) {
+            println!("  Note: relayed media is announced as {relay_ip}, which friends on the internet cannot reach - set --public-ip / NEXUS_PUBLIC_IP");
+        }
     }
     if want_upnp {
         println!("  UPnP: {}", if upnp_info.ok { "ports forwarded".to_string() } else { upnp_info.message.clone() });
@@ -315,7 +395,7 @@ async fn main() {
     let stop = hub.clone();
     let shutdown_signal = async move {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => { stop.shutdown.notify_waiters(); },
+            _ = stop_signal() => { stop.shutdown.notify_waiters(); },
             _ = stop.shutdown.notified() => {},
         }
         println!("Nexus Server shutting down…");

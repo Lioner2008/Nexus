@@ -27,6 +27,8 @@ Without a TURN server this works on a LAN and across most home routers. Optional
 Nexus starts the local server together with the launcher (`127.0.0.1:7777`, data in `%APPDATA%\app.nexus.launcher\server`).
 You can switch that off in the settings or start / stop it on the login screen of the *Chat & Voice* page.
 To host for friends run it yourself on a reachable address: `nexus-server --bind 0.0.0.0:7777` (and forward the port).
+Every release also ships `nexus-server-linux-x64`, a static Linux build for a VPS or a Pterodactyl panel (see below);
+every option can be given as an environment variable too (`NEXUS_TURN=1`, `NEXUS_INVITE`, `NEXUS_PUBLIC_IP`, …), see `nexus-server --help`.
 
 ```bash
 cd server
@@ -76,7 +78,9 @@ The key is stored locally only (`%APPDATA%\app.nexus.launcher\settings.json`).
 
 ## Hosting on Pterodactyl Panel
 
-Want to run `nexus-server` on a Pterodactyl panel instead of your PC? The `pterodactyl/` folder has a ready-made **egg**: a GitHub Actions workflow builds a Linux Docker image (GHCR) and the egg JSON can be imported into any panel. See [pterodactyl/README.md](pterodactyl/README.md).
+`pterodactyl/` has a ready-made **egg** for hosting `nexus-server` on a [Pterodactyl](https://pterodactyl.io) panel (or any game-server host that uses one).
+It runs the Linux build that every release ships in the stock Pterodactyl image; the panel's allocations and the egg variables set the port,
+invite code, TURN relay and public address. See [pterodactyl/README.md](pterodactyl/README.md).
 
 ## Build
 

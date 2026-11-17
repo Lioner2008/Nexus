@@ -1,6 +1,7 @@
 ﻿name: Release
 
-# Pushing a tag like v0.3.0 builds launcher, server and installer on Windows and publishes a GitHub release.
+# Pushing a tag like v0.3.0 builds launcher, server and installer on Windows, the static Linux server
+# (nexus-server-linux-x64, used by the Pterodactyl egg) and publishes a GitHub release.
 # Installed copies of Nexus look at the latest release (Nexus-Setup-*.exe + SHA256SUMS.txt) and offer the update in the app.
 on:
   push:
@@ -11,7 +12,35 @@ permissions:
   contents: write
 
 jobs:
+  # Static Linux x86_64 build of the server: the Pterodactyl egg (pterodactyl/) downloads it from the release.
+  linux-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+          key: musl
+
+      - name: Build nexus-server (static, musl)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
+          cargo build --release --locked --manifest-path server/Cargo.toml --target x86_64-unknown-linux-musl
+          cp server/target/x86_64-unknown-linux-musl/release/nexus-server nexus-server-linux-x64
+          ./nexus-server-linux-x64 --version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexus-server-linux-x64
+          path: nexus-server-linux-x64
+
   windows:
+    needs: linux-server
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,6 +67,12 @@ jobs:
       - name: Build installer (builds launcher and server first)
         shell: pwsh
         run: ./installer/build.ps1
+
+      - name: Add the Linux server build (listed in SHA256SUMS.txt too)
+        uses: actions/download-artifact@v4
+        with:
+          name: nexus-server-linux-x64
+          path: release
 
       - name: Package
         shell: pwsh

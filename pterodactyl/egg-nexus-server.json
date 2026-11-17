@@ -1,37 +1,38 @@
 {
-    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL – Pterodactyl Egg for the Nexus social server",
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL - PTERODACTYL PANEL - https://pterodactyl.io",
     "meta": {
         "version": "PTDL_v2",
         "update_url": null
     },
-    "exported_at": "2026-11-17T14:30:00+00:00",
+    "exported_at": "2026-11-17T18:00:00+00:00",
     "name": "Nexus Server",
     "author": "lioner2008@users.noreply.github.com",
-    "description": "Nexus social server: accounts, text chat, voice/video call signaling and a built-in TURN relay for the Nexus game launcher.\r\n\r\nThe server listens on the primary allocation (SERVER_PORT).\r\n- Optional TURN relay: UDP TURN_PORT (default 3478) and UDP relay ports RELAY_MIN-RELAY_MAX (default 49160-49200)\r\n\r\nAllocate the UDP ports to the server and set PUBLIC_IP to the node's public address so calls work across networks.",
+    "description": "Nexus social server (https://github.com/Lioner2008/Nexus): accounts, text chat, voice/video call signaling and a built-in TURN relay for the Nexus game launcher.\n\nThe server listens on the primary allocation (TCP). With the TURN relay switched on it also needs the UDP ports 'TURN port' (default 3478) and 'Relay ports' (default 49160-49200) allocated to this server; voice and video are then relayed through them when the players' NATs do not allow a direct connection.",
     "features": null,
     "docker_images": {
-        "ghcr.io/lioner2008/nexus-server:latest": "ghcr.io/lioner2008/nexus-server:latest"
+        "Debian": "ghcr.io/pterodactyl/yolks:debian",
+        "Alpine": "ghcr.io/pterodactyl/yolks:alpine"
     },
     "file_denylist": [],
-    "startup": "/usr/local/bin/nexus-entrypoint.sh",
+    "startup": "exec ./nexus-server --bind 0.0.0.0:{{SERVER_PORT}} --data nexus-data",
     "config": {
         "files": "{}",
-        "startup": "{\r\n    \"done\": \"listening on http://\"\r\n}",
+        "startup": "{\n    \"done\": \"listening on http://\"\n}",
         "logs": "{}",
         "stop": "^C"
     },
     "scripts": {
         "installation": {
-            "script": "#!/bin/bash\r\n# Nexus Server installation\r\ncd /home/container\r\nmkdir -p nexus-data\r\nchown -R container:container /home/container 2>/dev/null || true\r\necho \"Nexus Server installed. Set the variables, then start the server.\"",
-            "container": "ghcr.io/lioner2008/nexus-server:latest",
+            "script": "#!/bin/bash\n# Nexus Server – Pterodactyl install script (embedded in egg-nexus-server.json).\n# Runs once in the install container (ghcr.io/pterodactyl/installers:alpine) with the\n# server volume mounted at /mnt/server. Downloads the Linux build that every GitHub\n# release of Nexus ships (nexus-server-linux-x64) and checks it against SHA256SUMS.txt.\nset -euo pipefail\ncd /mnt/server\n\nREPO=\"Lioner2008/Nexus\"\nASSET=\"nexus-server-linux-x64\"\nVERSION=\"${NEXUS_VERSION:-latest}\"\nVERSION=\"${VERSION// /}\"\nSUMS=\"\"\n\nif [ -n \"${NEXUS_DOWNLOAD_URL:-}\" ]; then\n    URL=\"${NEXUS_DOWNLOAD_URL}\"\nelif [ -z \"${VERSION}\" ] || [ \"${VERSION}\" = \"latest\" ]; then\n    URL=\"https://github.com/${REPO}/releases/latest/download/${ASSET}\"\n    SUMS=\"https://github.com/${REPO}/releases/latest/download/SHA256SUMS.txt\"\nelse\n    case \"${VERSION}\" in v*) ;; *) VERSION=\"v${VERSION}\" ;; esac\n    URL=\"https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}\"\n    SUMS=\"https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS.txt\"\nfi\n\necho \"Downloading ${URL}\"\nif ! curl -fsSL --retry 3 -o nexus-server.download \"${URL}\"; then\n    echo \"ERROR: download failed. Does release '${VERSION}' have a '${ASSET}' asset?\"\n    echo \"       Check https://github.com/${REPO}/releases (Linux builds exist from v0.5.2 on)\"\n    echo \"       or set 'Download URL' to a direct link of a Linux x86_64 nexus-server binary.\"\n    rm -f nexus-server.download\n    exit 1\nfi\n\nif [ -n \"${SUMS}\" ] && curl -fsSL --retry 3 -o SHA256SUMS.txt \"${SUMS}\" 2>/dev/null; then\n    expected=\"$(awk -v f=\"${ASSET}\" '$2 == f { print $1 }' SHA256SUMS.txt)\"\n    if [ -n \"${expected}\" ]; then\n        actual=\"$(sha256sum nexus-server.download | awk '{ print $1 }')\"\n        if [ \"${expected}\" != \"${actual}\" ]; then\n            echo \"ERROR: SHA-256 mismatch for ${ASSET} (expected ${expected}, got ${actual})\"\n            rm -f nexus-server.download SHA256SUMS.txt\n            exit 1\n        fi\n        echo \"SHA-256 verified\"\n    fi\n    rm -f SHA256SUMS.txt\nfi\n\nmv -f nexus-server.download nexus-server\nchmod +x nexus-server\nmkdir -p nexus-data\necho \"Installed: $(./nexus-server --version)\"\necho \"Set the variables on the Startup tab (invite code, TURN relay, public address), then start the server.\"\n",
+            "container": "ghcr.io/pterodactyl/installers:alpine",
             "entrypoint": "bash"
         }
     },
     "variables": [
         {
             "name": "Invite code",
-            "description": "Code friends need when creating an account (--invite). Leave empty to allow open registration – not recommended when the server is reachable from the internet.",
-            "env_variable": "INVITE_CODE",
+            "description": "Friends need this code to create an account. Leave empty for open registration - not recommended on a server that is reachable from the internet.",
+            "env_variable": "NEXUS_INVITE",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
@@ -39,9 +40,9 @@
             "field_type": "text"
         },
         {
-            "name": "Enable TURN relay",
-            "description": "Switch: on (1) starts the built-in TURN relay so voice/video calls work even behind strict NATs. Requires the UDP ports TURN_PORT and RELAY_MIN-RELAY_MAX to be allocated to this server. Off (0) = signaling only (calls only work peer-to-peer).",
-            "env_variable": "TURN_ENABLED",
+            "name": "TURN relay",
+            "description": "On: the built-in TURN relay makes voice and video work even when both players are behind strict NATs. Needs the UDP ports 'TURN port' and 'Relay ports' allocated to this server. Off: signaling only, calls must connect peer-to-peer.",
+            "env_variable": "NEXUS_TURN",
             "default_value": "1",
             "user_viewable": true,
             "user_editable": true,
@@ -50,8 +51,8 @@
         },
         {
             "name": "TURN port",
-            "description": "UDP port of the TURN relay. Must match an allocated UDP port (default 3478).",
-            "env_variable": "TURN_PORT",
+            "description": "UDP port of the TURN relay. Must be allocated to this server (default 3478).",
+            "env_variable": "NEXUS_TURN_PORT",
             "default_value": "3478",
             "user_viewable": true,
             "user_editable": true,
@@ -59,9 +60,9 @@
             "field_type": "text"
         },
         {
-            "name": "Relay port range min",
-            "description": "First UDP relay port (--relay-min). Each simultaneous relayed stream needs one port. Must match the allocated UDP ports.",
-            "env_variable": "RELAY_MIN",
+            "name": "Relay ports: first",
+            "description": "First UDP port for relayed media. Every simultaneous relayed stream uses one port; the whole range must be allocated to this server.",
+            "env_variable": "NEXUS_RELAY_MIN",
             "default_value": "49160",
             "user_viewable": true,
             "user_editable": true,
@@ -69,9 +70,9 @@
             "field_type": "text"
         },
         {
-            "name": "Relay port range max",
-            "description": "Last UDP relay port (--relay-max). Must match the allocated UDP ports and be at least RELAY_MIN.",
-            "env_variable": "RELAY_MAX",
+            "name": "Relay ports: last",
+            "description": "Last UDP port for relayed media (at least 'Relay ports: first').",
+            "env_variable": "NEXUS_RELAY_MAX",
             "default_value": "49200",
             "user_viewable": true,
             "user_editable": true,
@@ -79,13 +80,33 @@
             "field_type": "text"
         },
         {
-            "name": "Public IP",
-            "description": "Public IP or hostname of this server (--public-ip), used by the TURN relay. Leave empty to auto-detect – inside Docker the detected address is usually wrong, so set the node's public IP here.",
-            "env_variable": "PUBLIC_IP",
+            "name": "Public address",
+            "description": "Public IP or host name of this node, announced to players for relayed media. Leave empty to use the IP of the allocation (works when the node's allocations use its public IP).",
+            "env_variable": "NEXUS_PUBLIC_IP",
             "default_value": "",
             "user_viewable": true,
             "user_editable": true,
-            "rules": "nullable|string|max:64",
+            "rules": "nullable|string|max:255",
+            "field_type": "text"
+        },
+        {
+            "name": "Version",
+            "description": "Release to install: 'latest' or a tag such as v0.5.2 (Linux builds exist from v0.5.2 on). Reinstall the server after changing it.",
+            "env_variable": "NEXUS_VERSION",
+            "default_value": "latest",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|max:32",
+            "field_type": "text"
+        },
+        {
+            "name": "Download URL (advanced)",
+            "description": "Direct link to a Linux x86_64 nexus-server binary, for forks or own builds. Overrides 'Version'; not checked against SHA256SUMS.txt.",
+            "env_variable": "NEXUS_DOWNLOAD_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:255",
             "field_type": "text"
         }
     ]
