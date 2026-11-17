@@ -33,12 +33,12 @@ jobs:
           npm install --no-audit --no-fund
           npx cap add android
 
-      - name: Permissions (microphone) and plain http/ws to the Nexus server
+      - name: Permissions (microphone, camera) and plain http/ws to the Nexus server
         working-directory: mobile
         run: |
           M=android/app/src/main/AndroidManifest.xml
           sed -i 's#<application#<application android:usesCleartextTraffic="true"#' "$M"
-          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <uses-permission android:name="android.permission.VIBRATE" />\n</manifest>#' "$M"
+          sed -i 's#</manifest>#    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n    <uses-permission android:name="android.permission.CAMERA" />\n    <uses-feature android:name="android.hardware.camera" android:required="false" />\n    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />\n    <uses-permission android:name="android.permission.VIBRATE" />\n</manifest>#' "$M"
           grep -E "uses-permission|usesCleartextTraffic" "$M"
 
       - name: Version from the tag
@@ -88,4 +88,4 @@ jobs:
 
             **Install:** download the `.apk`, open it on your phone and allow "install from this source" when Android asks.
             On first start enter the server address (`http://address:7777`) and log in – or create an account (with the invite code if the server needs one).
-            Allow the microphone when you join a voice room. The screen stays on during a call.
+            Allow the microphone when you join a voice room (and the camera if you turn video on). The screen stays on during a call.

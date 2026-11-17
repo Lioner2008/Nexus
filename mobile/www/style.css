@@ -88,9 +88,27 @@ label input:focus { border-color: var(--acc); }
 
 /* talk + people */
 #talk, #people { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; -webkit-overflow-scrolling: touch; }
+#talk > *, #people > *, .msgs > * { flex-shrink: 0; } /* otherwise the cards get squashed and drawn over each other */
+#p-talk { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+#p-talk > * { flex-shrink: 0; }
+#p-talk #talk { flex: none; overflow: visible; }
+#stage { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 12px 12px 0; }
+#stage:empty { display: none; }
+#stage.one { grid-template-columns: 1fr; }
+.tile { position: relative; aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; background: #000; border: 1px solid var(--line); }
+#stage.one .tile { aspect-ratio: 16 / 10; }
+.tile video { width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+.tile.mirror video { transform: scaleX(-1); }
+.tile .lbl { position: absolute; left: 8px; bottom: 8px; max-width: calc(100% - 16px); padding: 3px 9px; border-radius: 99px; background: rgba(0, 0, 0, .6); font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile .ph { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 10px; color: var(--mut); font-size: 13px; background: var(--panel); }
+.tile .ph button, .tile .x { height: 32px; padding: 0 14px; border-radius: 99px; background: var(--acc); color: var(--acc-ink); font: 700 12px var(--font-d); letter-spacing: .08em; }
+.tile .x { position: absolute; right: 8px; top: 8px; height: 28px; padding: 0 10px; background: rgba(0, 0, 0, .6); color: #fff; }
+.tile.screen video { object-fit: contain; }
+.round.on { background: var(--acc); color: var(--acc-ink); }
+.round svg { width: 20px; height: 20px; }
 .sec { padding: 6px 4px 0; font: 600 11px var(--font-d); letter-spacing: .2em; text-transform: uppercase; color: var(--dim); }
 .vroom { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 12px; }
-.vroom.live { border-color: rgba(74, 222, 128, .45); }
+.vroom.occupied { border-color: rgba(74, 222, 128, .45); }
 .vhead { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; }
 .vhead b { flex: 1; font-size: 15px; }
 .join { height: 34px; padding: 0 16px; border-radius: 99px; background: var(--acc); color: var(--acc-ink); font: 700 12px var(--font-d); letter-spacing: .12em; }

@@ -35,6 +35,8 @@
 
   <div id="call-bar" hidden>
     <i class="live"></i><b id="call-name"></b><span class="sp"></span>
+    <button class="round" id="cb-flip" aria-label="Flip camera" hidden><svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4zM9 13.5a3 3 0 0 1 5.2-2M15 13.5a3 3 0 0 1-5.2 2"/></svg></button>
+    <button class="round" id="cb-cam" aria-label="Camera"></button>
     <button class="round" id="cb-mute" aria-label="Mute"></button>
     <button class="round red" id="cb-leave" aria-label="Leave"><svg viewBox="0 0 24 24"><path d="M3 15c5-5 13-5 18 0l-2.2 2.6-3.3-1.6v-2.6c-2.2-.6-4.8-.6-7 0v2.6l-3.3 1.6z"/></svg></button>
   </div>
@@ -49,6 +51,7 @@
   </div>
 
   <div class="pane" id="p-talk" hidden>
+    <div id="stage"></div>
     <div id="talk"></div>
   </div>
 

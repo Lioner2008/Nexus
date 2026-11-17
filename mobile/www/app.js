@@ -17,6 +17,8 @@ const ICON = {
   micOff: '<svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M3 3l18 18"/></svg>',
   phone: '<svg viewBox="0 0 24 24"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>',
   msg: '<svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg>',
+  cam: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="2"/><path d="M15 10l6-3v10l-6-3"/></svg>',
+  camOff: '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="12" height="12" rx="2"/><path d="M15 10l6-3v10l-6-3M3 3l18 18"/></svg>',
 };
 
 const S = {
@@ -25,7 +27,7 @@ const S = {
   msgs: new Map(), unread: new Map(), current: 'general', tab: 'chat', mode: 'login',
   retry: 0, wantOnline: false, inviteRequired: false, hb: 0, ring: null,
 };
-const V = { room: null, local: null, ctx: null, muted: false, peers: new Map(), stops: new Map(), wake: null, calling: null };
+const V = { room: null, local: null, ctx: null, muted: false, peers: new Map(), stops: new Map(), wake: null, calling: null, cam: null, facing: 'user', tiles: new Map() };
 
 const send = (o) => { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(o)); };
 const normBase = (s) => {
@@ -174,7 +176,15 @@ function handle(m) {
     case 'voice_members': for (const mem of m.members) makePeer(mem.conn, mem.user, mem); renderTalk(); break;
     case 'voice_joined': if (V.room === m.room) { makePeer(m.member.conn, m.member.user, m.member); beep('join'); } break;
     case 'voice_left': dropPeer(m.conn); beep('leave'); break;
-    case 'voice_state': { const p = V.peers.get(m.member.conn); if (p) { p.muted = m.member.muted; renderTalk(); } break; }
+    case 'voice_state': {
+      const p = V.peers.get(m.member.conn);
+      if (p) {
+        p.muted = m.member.muted; p.video = !!m.member.video; p.screen = !!m.member.screen;
+        if (!p.screen) p.watching = false;
+        refreshDirections(p); renderTalk();
+      }
+      break;
+    }
     case 'signal': onSignal(m); break;
     case 'call_started': joinVoice(m.room, true).then(() => { V.calling = { room: m.room, to: m.to }; toast(`Calling ${m.to}…`); }); break;
     case 'call_incoming': showRing(m); break;
@@ -284,10 +294,11 @@ function renderTalk() {
   const roomHTML = (id, name) => {
     const members = S.voiceRooms[id] || [];
     const inHere = V.room === id;
-    return `<div class="vroom ${members.length ? 'live' : ''}"><div class="vhead"><b>${esc(name)}</b><button class="join ${inHere ? 'leave' : ''}" data-join="${esc(id)}">${inHere ? 'LEAVE' : 'JOIN'}</button></div>${members.map((m) => member(m, m.conn === S.conn)).join('')}</div>`;
+    return `<div class="vroom ${members.length ? 'occupied' : ''}"><div class="vhead"><b>${esc(name)}</b><button class="join ${inHere ? 'leave' : ''}" data-join="${esc(id)}">${inHere ? 'LEAVE' : 'JOIN'}</button></div>${members.map((m) => member(m, m.conn === S.conn)).join('')}</div>`;
   };
   box.innerHTML = `<div class="sec">Voice rooms</div>${rooms.map((r) => roomHTML(r.id, r.name)).join('') || '<div class="empty">No voice rooms yet.</div>'}${callRoom ? `<div class="sec">Call</div>${roomHTML(callRoom, 'Call')}` : ''}${V.room ? `<div class="bigctl"><button class="round big ${V.muted ? 'off' : ''}" data-mute aria-label="Mute">${V.muted ? ICON.micOff : ICON.mic}</button></div>` : ''}`;
   renderCallBar();
+  renderStage();
 }
 
 function renderCallBar() {
@@ -298,6 +309,89 @@ function renderCallBar() {
   $('#call-name').textContent = V.room.startsWith('call:') ? 'In a call' : (r?.name || 'Voice');
   $('#cb-mute').innerHTML = V.muted ? ICON.micOff : ICON.mic;
   $('#cb-mute').classList.toggle('off', V.muted);
+  $('#cb-cam').innerHTML = V.cam ? ICON.cam : ICON.camOff;
+  $('#cb-cam').classList.toggle('on', !!V.cam);
+  $('#cb-flip').hidden = !V.cam;
+}
+
+/* ───────────── video (camera of everyone, screens you choose to watch) ───────────── */
+
+function videoTile(key, label, stream, opt = {}) {
+  let t = V.tiles.get(key);
+  if (!t) {
+    t = document.createElement('div');
+    t.innerHTML = '<video playsinline autoplay muted></video><span class="lbl"></span>';
+    V.tiles.set(key, t);
+  }
+  t.className = `tile${opt.mirror ? ' mirror' : ''}${opt.screen ? ' screen' : ''}`;
+  t.querySelector('.lbl').textContent = label;
+  const v = t.querySelector('video');
+  if (v.srcObject !== stream) { v.srcObject = stream; v.play().catch(() => {}); }
+  let x = t.querySelector('.x');
+  if (opt.stop && !x) { x = document.createElement('button'); x.className = 'x'; x.textContent = 'STOP'; x.dataset.unwatch = opt.stop; t.appendChild(x); }
+  return t;
+}
+
+function watchTile(p) {
+  const key = `${p.conn}:ph`;
+  let t = V.tiles.get(key);
+  if (!t) { t = document.createElement('div'); t.className = 'tile'; V.tiles.set(key, t); }
+  t.innerHTML = `<div class="ph"><span>${esc(p.user)} shares their screen</span><button data-watch="${p.conn}">WATCH</button></div>`;
+  return t;
+}
+
+function renderStage() {
+  const st = $('#stage');
+  if (!st) return;
+  const want = [];
+  if (V.room && V.cam) {
+    if (!V.camStream || V.camStream.getVideoTracks()[0] !== V.cam) V.camStream = new MediaStream([V.cam]);
+    want.push(videoTile('me', 'You', V.camStream, { mirror: V.facing === 'user' }));
+  }
+  for (const p of V.peers.values()) {
+    if (p.video && p.camStream.getVideoTracks().length) want.push(videoTile(p.conn, p.user, p.camStream));
+    if (p.screen) want.push(p.watching && p.screenStream.getVideoTracks().length ? videoTile(`${p.conn}:s`, `${p.user} · screen`, p.screenStream, { screen: true, stop: p.conn }) : watchTile(p));
+  }
+  for (const c of [...st.children]) if (!want.includes(c)) c.remove();
+  for (const t of want) if (t.parentNode !== st) st.appendChild(t);
+  st.className = want.length === 1 ? 'one' : '';
+}
+
+async function startCam() {
+  if (!V.room || V.cam) return;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: V.facing, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 } } });
+    const track = s.getVideoTracks()[0];
+    if (!V.room) { track.stop(); return; }
+    V.cam = track;
+    track.onended = () => { if (V.cam === track) stopCam(); };
+    for (const p of V.peers.values()) { p.camTx.sender.replaceTrack(track).catch(() => {}); tuneVideo(p.camTx.sender); }
+    send({ t: 'voice_state', video: true });
+  } catch { toast('No camera access', 'err'); }
+  renderCallBar(); renderStage();
+}
+
+function stopCam() {
+  if (!V.cam) return;
+  V.cam.stop(); V.cam = null;
+  for (const p of V.peers.values()) p.camTx.sender.replaceTrack(null).catch(() => {});
+  send({ t: 'voice_state', video: false });
+  renderCallBar(); renderStage();
+}
+
+async function flipCam() {
+  if (!V.cam) return;
+  const next = V.facing === 'user' ? 'environment' : 'user';
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: next, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 24, max: 30 } } });
+    const track = s.getVideoTracks()[0];
+    const old = V.cam;
+    V.facing = next; V.cam = track;
+    track.onended = () => { if (V.cam === track) stopCam(); };
+    old.onended = null; old.stop();
+    for (const p of V.peers.values()) p.camTx.sender.replaceTrack(track).catch(() => {});
+    renderStage();
+  } catch { toast('Could not switch the camera', 'err'); }
 }
 
 function renderAll() { renderMe(); renderRooms(); renderMsgs(); renderPeople(); renderTalk(); updateDot(); }
@@ -370,14 +464,17 @@ function endVoice() {
   for (const stop of V.stops.values()) stop();
   V.stops.clear();
   V.local?.getTracks().forEach((t) => t.stop());
+  V.cam?.stop();
   try { V.wake?.release(); } catch { /* ignore */ }
-  Object.assign(V, { room: null, local: null, muted: false, wake: null, calling: null });
+  Object.assign(V, { room: null, local: null, muted: false, wake: null, calling: null, cam: null });
+  V.tiles.clear();
   renderTalk();
 }
 
 function closePeer(p) {
   try { p.pc.close(); } catch { /* ignore */ }
   if (p.audioEl) { p.audioEl.srcObject = null; p.audioEl.remove(); }
+  for (const k of [p.conn, `${p.conn}:s`, `${p.conn}:ph`]) V.tiles.delete(k);
 }
 function dropPeer(conn) {
   const p = V.peers.get(conn);
@@ -392,38 +489,117 @@ function dropPeer(conn) {
 function makePeer(conn, user, state = {}) {
   if (V.peers.has(conn)) return V.peers.get(conn);
   const pc = new RTCPeerConnection({ iceServers: S.ice });
-  const peer = { conn, user, pc, polite: S.conn < conn, makingOffer: false, ignoreOffer: false, stream: new MediaStream(), audioEl: document.createElement('audio'), muted: !!state.muted, volume: 1 };
+  const peer = {
+    conn, user, pc, polite: S.conn < conn, makingOffer: false, ignoreOffer: false, stream: new MediaStream(), audioEl: document.createElement('audio'),
+    muted: !!state.muted, volume: 1, video: !!state.video, screen: !!state.screen, watching: false,
+    camStream: new MediaStream(), screenStream: new MediaStream(), videoTracks: new Map(), remoteMids: null, sentMids: '', camTx: null, screenTx: null,
+  };
   peer.audioEl.autoplay = true;
   $('#audio').appendChild(peer.audioEl);
+  // Same layout as the desktop app (audio, camera, screen) so both understand each other.
   const mic = V.local?.getAudioTracks()[0];
   if (mic) pc.addTrack(mic, V.local);
   else pc.addTransceiver('audio', { direction: 'sendrecv' }); // listen only; a microphone can't be added later on mobile
+  peer.camTx = pc.addTransceiver('video', { direction: 'sendrecv' });
+  peer.screenTx = pc.addTransceiver('video', { direction: 'inactive' }); // opens when someone shares and I watch
+  if (V.cam) { peer.camTx.sender.replaceTrack(V.cam).catch(() => {}); tuneVideo(peer.camTx.sender); }
+  refreshDirections(peer);
   pc.onicecandidate = (e) => { if (e.candidate) send({ t: 'signal', to: conn, data: { candidate: e.candidate } }); };
-  pc.ontrack = (e) => {
-    peer.stream.addTrack(e.track);
-    peer.audioEl.srcObject = peer.stream;
-    peer.audioEl.play().catch(() => { /* retried on the next tap */ });
-    watchLevel(conn, e.track);
-  };
+  pc.ontrack = () => syncTracks(peer);
   // "perfect negotiation": both sides may offer at the same time, the polite one backs off
   pc.onnegotiationneeded = async () => {
     try {
       peer.makingOffer = true;
       await pc.setLocalDescription();
       send({ t: 'signal', to: conn, data: { description: pc.localDescription } });
+      announceMids(peer);
     } catch (e) { console.warn(e); } finally { peer.makingOffer = false; }
   };
-  pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed') { try { pc.restartIce(); } catch { /* ignore */ } } };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed') { try { pc.restartIce(); } catch { /* ignore */ } }
+    if (pc.connectionState === 'connected') syncTracks(peer);
+  };
   V.peers.set(conn, peer);
   renderTalk();
   return peer;
+}
+
+/* Each side creates its own video transceivers, so a camera/screen can arrive on any m-line:
+ * everyone announces the "mid" of its camera and screen sender and the receiver routes by that. */
+function announceMids(peer) {
+  const cam = peer.camTx.mid, scr = peer.screenTx.mid;
+  if (cam == null || scr == null) return;
+  const key = `${cam},${scr}`;
+  if (peer.sentMids === key) return;
+  peer.sentMids = key;
+  send({ t: 'signal', to: peer.conn, data: { mids: { cam: String(cam), screen: String(scr) } } });
+}
+
+/** After a "rollback" (both sides offered at once) a track from ontrack can be stale: always use what the receivers hold now. */
+function syncTracks(peer) {
+  if (!V.peers.has(peer.conn)) return;
+  const audio = [], video = new Map();
+  for (const t of peer.pc.getTransceivers()) {
+    const tr = t.receiver?.track;
+    if (!tr || t.mid == null || t.stopped) continue;
+    if (tr.kind === 'audio') audio.push(tr); else video.set(t.mid, tr);
+  }
+  let changed = false;
+  for (const old of peer.stream.getAudioTracks()) if (!audio.includes(old)) { peer.stream.removeTrack(old); changed = true; }
+  for (const tr of audio) if (!peer.stream.getTracks().includes(tr)) { peer.stream.addTrack(tr); watchLevel(peer.conn, tr); changed = true; }
+  if (changed || peer.audioEl.srcObject !== peer.stream) {
+    peer.audioEl.srcObject = peer.stream;
+    peer.audioEl.play().catch(() => { /* retried on the next tap */ });
+  }
+  peer.videoTracks = video;
+  routeVideo(peer);
+}
+
+function routeVideo(peer) {
+  const m = peer.remoteMids;
+  if (!m) return;
+  const live = new Set(peer.videoTracks.values());
+  for (const s of [peer.camStream, peer.screenStream]) for (const t of s.getTracks()) if (!live.has(t)) s.removeTrack(t);
+  for (const [mid, track] of peer.videoTracks) {
+    const target = String(mid) === m.screen ? peer.screenStream : String(mid) === m.cam ? peer.camStream : null;
+    if (!target) continue;
+    const other = target === peer.screenStream ? peer.camStream : peer.screenStream;
+    if (other.getTracks().includes(track)) other.removeTrack(track);
+    if (!target.getTracks().includes(track)) target.addTrack(track);
+  }
+  renderStage();
+}
+
+/** My camera is always sent, the other person's camera always received, their screen only while I watch it. */
+function refreshDirections(peer) {
+  const m = peer.remoteMids;
+  for (const t of peer.pc.getTransceivers()) {
+    if (t.stopped || (t !== peer.camTx && t !== peer.screenTx && !(m && (String(t.mid) === m.cam || String(t.mid) === m.screen)))) continue;
+    const remote = !!m && (String(t.mid) === m.cam || String(t.mid) === m.screen);
+    const sendIt = t === peer.camTx;
+    // my camera line is "sendrecv" from the very start, so it matches the other side's camera line (a lone "sendonly" line
+    // makes both sides open extra lines, and after the resulting rollback Chrome can leave the voice track muted)
+    const recvIt = t === peer.camTx || (remote && (String(t.mid) === m.cam || peer.watching));
+    const dir = sendIt && recvIt ? 'sendrecv' : sendIt ? 'sendonly' : recvIt ? 'recvonly' : 'inactive';
+    try { if (t.direction !== dir) t.direction = dir; } catch { /* closed */ }
+  }
+}
+
+function tuneVideo(sender) { // phones: keep the picture small and the bitrate low
+  try {
+    const p = sender.getParameters();
+    if (!p.encodings?.length) p.encodings = [{}];
+    p.encodings[0].maxBitrate = 700000;
+    sender.setParameters(p).catch(() => {});
+  } catch { /* not supported */ }
 }
 
 async function onSignal(m) {
   if (!V.room) return;
   const peer = V.peers.get(m.from) || makePeer(m.from, m.user);
   const pc = peer.pc;
-  const { description, candidate } = m.data || {};
+  const { description, candidate, mids } = m.data || {};
+  if (mids) { peer.remoteMids = mids; routeVideo(peer); refreshDirections(peer); return; }
   try {
     if (description) {
       const collision = description.type === 'offer' && (peer.makingOffer || pc.signalingState !== 'stable');
@@ -434,6 +610,9 @@ async function onSignal(m) {
         await pc.setLocalDescription();
         send({ t: 'signal', to: m.from, data: { description: pc.localDescription } });
       }
+      announceMids(peer);
+      refreshDirections(peer);
+      syncTracks(peer);
     } else if (candidate) {
       try { await pc.addIceCandidate(candidate); } catch (e) { if (!peer.ignoreOffer) throw e; }
     }
@@ -529,6 +708,15 @@ function init() {
     if (p) { p.volume = Number(r.value) / 100; p.audioEl.volume = p.volume; }
   });
   $('#cb-mute').addEventListener('click', () => setMuted(!V.muted));
+  $('#cb-cam').addEventListener('click', () => (V.cam ? stopCam() : startCam()));
+  $('#cb-flip').addEventListener('click', flipCam);
+  $('#stage').addEventListener('click', (e) => {
+    const w = e.target.closest('[data-watch]'), u = e.target.closest('[data-unwatch]');
+    const p = V.peers.get(Number((w || u)?.dataset.watch ?? (w || u)?.dataset.unwatch));
+    if (!p) return;
+    p.watching = !!w;
+    refreshDirections(p); renderStage();
+  });
   $('#cb-leave').addEventListener('click', leaveVoice);
 
   $('#ring-yes').addEventListener('click', () => {
