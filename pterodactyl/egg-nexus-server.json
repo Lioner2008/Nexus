@@ -1,0 +1,92 @@
+{
+    "_comment": "DO NOT EDIT: FILE GENERATED AUTOMATICALLY BY PTERODACTYL PANEL – Pterodactyl Egg for the Nexus social server",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-11-17T12:00:00+00:00",
+    "name": "Nexus Server",
+    "author": "lioner2008@users.noreply.github.com",
+    "description": "Nexus social server: accounts, text chat, voice/video call signaling and a built-in TURN relay for the Nexus game launcher.\r\n\r\n- Main TCP port: {{SERVER_PORT}} (default 7777)\r\n- Optional TURN relay: UDP TURN_PORT (default 3478) and UDP relay ports RELAY_MIN-RELAY_MAX (default 49160-49200)\r\n\r\nAllocate the UDP ports to the server and set PUBLIC_IP to the node's public address so calls work across networks.",
+    "features": null,
+    "docker_images": {
+        "ghcr.io/lioner2008/nexus-server:latest": "ghcr.io/lioner2008/nexus-server:latest"
+    },
+    "file_denylist": [],
+    "startup": "TURN=\"\"; [ \"${TURN_ENABLED}\" = \"1\" ] && TURN=\"--turn --turn-port ${TURN_PORT} --relay-min ${RELAY_MIN} --relay-max ${RELAY_MAX}\"; INVITE=\"\"; [ -n \"${INVITE_CODE}\" ] && INVITE=\"--invite ${INVITE_CODE}\"; PUBIP=\"\"; [ -n \"${PUBLIC_IP}\" ] && PUBIP=\"--public-ip ${PUBLIC_IP}\"; exec /usr/local/bin/nexus-server --bind 0.0.0.0:{{SERVER_PORT}} --data nexus-data ${TURN} ${INVITE} ${PUBIP}",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": \"listening on http://\"\r\n}",
+        "logs": "{}",
+        "stop": "^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\r\n# Nexus Server installation\r\ncd /home/container\r\nmkdir -p nexus-data\r\nchown -R container:container /home/container 2>/dev/null || true\r\necho \"Nexus Server installed. Set the variables, then start the server.\"",
+            "container": "ghcr.io/lioner2008/nexus-server:latest",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Invite code",
+            "description": "Code friends need when creating an account (--invite). Leave empty to allow open registration – not recommended when the server is reachable from the internet.",
+            "env_variable": "INVITE_CODE",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        },
+        {
+            "name": "Enable TURN relay",
+            "description": "1 = start the built-in TURN relay so voice/video calls work even behind strict NATs. Requires the UDP ports TURN_PORT and RELAY_MIN-RELAY_MAX to be allocated to this server. 0 = signaling only (calls only work peer-to-peer).",
+            "env_variable": "TURN_ENABLED",
+            "default_value": "1",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string|in:0,1",
+            "field_type": "text"
+        },
+        {
+            "name": "TURN port",
+            "description": "UDP port of the TURN relay. Must match an allocated UDP port (default 3478).",
+            "env_variable": "TURN_PORT",
+            "default_value": "3478",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Relay port range min",
+            "description": "First UDP relay port (--relay-min). Each simultaneous relayed stream needs one port. Must match the allocated UDP ports.",
+            "env_variable": "RELAY_MIN",
+            "default_value": "49160",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Relay port range max",
+            "description": "Last UDP relay port (--relay-max). Must match the allocated UDP ports and be at least RELAY_MIN.",
+            "env_variable": "RELAY_MAX",
+            "default_value": "49200",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|integer|between:1024,65535",
+            "field_type": "text"
+        },
+        {
+            "name": "Public IP",
+            "description": "Public IP or hostname of this server (--public-ip), used by the TURN relay. Leave empty to auto-detect – inside Docker the detected address is usually wrong, so set the node's public IP here.",
+            "env_variable": "PUBLIC_IP",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string|max:64",
+            "field_type": "text"
+        }
+    ]
+}

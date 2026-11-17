@@ -74,6 +74,10 @@ The *TeamSpeak* tab talks to your running TeamSpeak 3 client through its **Clien
 In TeamSpeak enable *Tools → Options → Addons → ClientQuery* and paste the API key into Nexus.
 The key is stored locally only (`%APPDATA%\app.nexus.launcher\settings.json`).
 
+## Hosting on Pterodactyl Panel
+
+Want to run `nexus-server` on a Pterodactyl panel instead of your PC? The `pterodactyl/` folder has a ready-made **egg**: a GitHub Actions workflow builds a Linux Docker image (GHCR) and the egg JSON can be imported into any panel. See [pterodactyl/README.md](pterodactyl/README.md).
+
 ## Build
 
 Requirements: [Rust](https://rustup.rs) and the Visual Studio C++ Build Tools.
