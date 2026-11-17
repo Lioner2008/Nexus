@@ -48,6 +48,17 @@ node tests/e2e.mjs http://127.0.0.1:7777     # smoke test against a running serv
 *Settings → Audio & video devices*: choose the microphone, headphones / speakers and camera, test them (level meter, camera preview,
 test sound). Changes also apply to a running call.
 
+### Watch party and games
+
+Press the gamepad button in a call to start something for everybody in the voice room (desktop app only):
+
+- **Watch party** – YouTube by default (paste a link). Also direct video links (`.mp4`, `.webm`, `.m3u8` …) and any website; save your own sites to the list. YouTube and video links are kept in sync (play, pause, skipping, latecomers); a plain website is shown to everybody but its playback cannot be synchronized, and sites that forbid being embedded stay blank (open them in the browser instead).
+- **Texas Hold'em** – 2–8 players, blinds, side pots, 45 s per decision. Hole cards are only sent to their owner until showdown.
+- **Billiards** – rotation pool for 1–8 players, every pocketed ball scores its number.
+- **Mini golf** – six holes, everybody putts at the same time, fewest strokes wins.
+
+No server update is needed: everything runs between the players. The person who starts an activity is its host (the host's window runs the game; if the host leaves, it ends).
+
 ### Playing with friends in other networks
 
 By default the server only listens on this PC. **Settings → Play with friends over the internet** (Internet mode) restarts it with

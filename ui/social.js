@@ -29,6 +29,7 @@ window.Social = (() => {
     full: svg('<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>'),
     eyeOff: svg('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM3 3l18 18"/>'),
     music: svg('<path d="M9 18V6l11-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>'),
+    game: svg('<rect x="2.5" y="7" width="19" height="11" rx="5"/><path d="M7.5 10.5v4M5.5 12.5h4M15.5 11.5h.01M18 13.5h.01"/>'),
     speaker: svg('<path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16.5 8.5a5 5 0 0 1 0 7"/>'),
   };
 
@@ -678,6 +679,7 @@ window.Social = (() => {
   }
 
   function endVoiceLocal(msg) {
+    window.Party?.reset();
     for (const p of V.peers.values()) closePeer(p);
     V.peers.clear();
     for (const stop of V.stops.values()) stop();
@@ -877,6 +879,7 @@ window.Social = (() => {
 
   async function onSignal(m) {
     if (!V.room) return;
+    if (m.data && m.data.nx) { window.Party?.onMessage(m.from, m.user, m.data); return; } // watch party / games ride on the signal relay
     const peer = V.peers.get(m.from) || makePeer(m.from, m.user);
     const pc = peer.pc;
     const { description, candidate, mids } = m.data || {};
@@ -903,6 +906,7 @@ window.Social = (() => {
     if (V.room !== m.room) return;
     for (const mem of m.members) makePeer(mem.conn, mem.user, mem);
     renderCall();
+    window.Party?.hello();
   }
   function onVoiceJoined(mem) {
     if (V.room !== mem.room) return;
@@ -910,6 +914,7 @@ window.Social = (() => {
     if (V.calling) { clearTimeout(V.calling.timer); V.calling = null; stopTone(); }
     uiSound('join');
     renderCall();
+    window.Party?.memberJoined(mem.conn);
   }
   function onVoiceLeft(conn) {
     const p = V.peers.get(conn);
@@ -921,6 +926,7 @@ window.Social = (() => {
     for (const key of [conn, `${conn}:s`]) { dropTile(V.tiles.get(key)); V.tiles.delete(key); }
     uiSound('leave');
     renderCall();
+    window.Party?.memberLeft(conn);
   }
   function onVoiceState(mem) {
     const p = V.peers.get(mem.conn);
@@ -1129,6 +1135,7 @@ window.Social = (() => {
       <button class="vbtn ${V.camTrack ? 'live' : ''}" data-act="cam" title="Camera">${V.camTrack ? ICON.cam : ICON.camOff}</button>
       <button class="vbtn ${V.screen ? 'live' : ''}" data-act="screen" title="${V.screen ? 'Stop sharing' : 'Share your screen'}">${ICON.screen}</button>
       <button class="vbtn ${$('#sfx-panel').hidden ? '' : 'live'}" data-act="sfx" title="Sound effects">${ICON.music}</button>
+      <button class="vbtn ${window.Party?.active() ? 'live' : ''} ${window.Party?.active() && !window.Party.isOpen() ? 'pulse' : ''}" data-act="party" title="Watch party &amp; games">${ICON.game}</button>
       <button class="vbtn leave" data-act="leave" title="Leave">${ICON.hangup}</button>`;
   }
 
@@ -1510,6 +1517,14 @@ window.Social = (() => {
   }
 
   function init() {
+    window.Party?.attach({
+      me: () => ({ conn: st.conn, user: st.user }),
+      others: () => [...V.peers.values()].map((p) => ({ conn: p.conn, user: p.user })),
+      sendTo: (conn, data) => send({ t: 'signal', to: conn, data }),
+      room: () => V.room,
+      refreshBar: () => { if (V.room) renderCallBar(); },
+      openUrl: (url) => api.invoke('open_url', { url }),
+    });
     if (st.inited) return;
     st.inited = true;
     st.base = S.settings.socialServer || '';
@@ -1612,6 +1627,7 @@ window.Social = (() => {
         case 'sfx': { const pnl = $('#sfx-panel'); pnl.hidden = !pnl.hidden; if (!pnl.hidden) renderSfx(); renderCallBar(); break; }
         case 'cam': if (V.camTrack) stopCamera(); else await startCamera(); break;
         case 'screen': if (V.screen) stopScreen(); else await startScreen(); break;
+        case 'party': window.Party?.toggle(); break;
         case 'leave': leaveVoice(); break;
         default: break;
       }
