@@ -512,6 +512,41 @@ fn open_url(url: String) -> Result<(), String> {
     open_uri(&url)
 }
 
+/// Watch party: a website opens in a window of its own. Many sites forbid being shown inside another
+/// page (X-Frame-Options / frame-ancestors), a real window has no such limit.
+#[tauri::command]
+async fn party_open(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed: tauri::Url = url.parse().map_err(|_| "invalid address".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("blocked".into());
+    }
+    if let Some(w) = app.get_webview_window("party") {
+        w.navigate(parsed).map_err(|e| e.to_string())?;
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(&app, "party", tauri::WebviewUrl::External(parsed))
+        .title("Nexus - watch party")
+        .inner_size(1180.0, 720.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn party_close(app: AppHandle) {
+    if let Some(w) = app.get_webview_window("party") {
+        let _ = w.close();
+    }
+}
+
+/// The address the watch party window shows right now (to share "this page" with the others).
+#[tauri::command]
+fn party_url(app: AppHandle) -> Option<String> {
+    app.get_webview_window("party").and_then(|w| w.url().ok()).map(|u| u.to_string())
+}
+
 /// What the UI needs after the artwork of one game changed.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1261,6 +1296,9 @@ fn main() {
             open_game_folder,
             open_folder,
             open_url,
+            party_open,
+            party_close,
+            party_url,
             clear_art_cache,
             open_data_folder,
             art_current,

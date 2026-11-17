@@ -123,6 +123,7 @@ window.Party = (() => {
     return {
       me: me(), isHost: A.isHost, players: () => A.players, members, name: nameOf, toast,
       act, isPlayer: () => A.players.some((p) => p.conn === me().conn), mod: A.mod, openUrl: (u) => api.openUrl?.(u),
+      native: () => !!window.__TAURI__, invoke: (c, a) => api.invoke?.(c, a),
     };
   }
 
@@ -323,6 +324,7 @@ window.Party = (() => {
         <form class="wp-bar">
           <input class="wp-url" placeholder="YouTube link, video link or any website address…" spellcheck="false">
           <button class="pbtn">PLAY FOR EVERYONE</button>
+          <button class="pbtn ghost" type="button" data-share title="Bring everybody to the page you are looking at in the website window" hidden>SHARE THIS PAGE</button>
           <button class="pbtn ghost" type="button" data-save title="Remember this website">☆ SAVE SITE</button>
         </form>
         <div class="wp-sites"></div>
@@ -338,6 +340,8 @@ window.Party = (() => {
       let quiet = 0;                  // ignore my own events caused by applying the host's state
       let lastKnown = { pos: 0, playing: false, at: Date.now() };
       let poll = 0;
+      let extOpen = false;            // a website window is open (desktop app)
+      const shareBtn = el.querySelector('[data-share]');
       const hush = (ms = 900) => { quiet = Date.now() + ms; };
       const expected = () => lastKnown.pos + (lastKnown.playing ? (Date.now() - lastKnown.at) / 1000 : 0);
 
@@ -378,10 +382,19 @@ window.Party = (() => {
         openSrc(parseSource(url));
       });
 
-      const killPlayer = () => { clearInterval(poll); try { player?.destroy(); } catch { /* ignore */ } player = null; stage.innerHTML = ''; note.hidden = true; };
+      const killPlayer = (keepWindow) => {
+        clearInterval(poll); try { player?.destroy(); } catch { /* ignore */ } player = null; stage.innerHTML = ''; note.hidden = true;
+        if (extOpen && !keepWindow) { extOpen = false; shareBtn.hidden = true; ctx.invoke('party_close'); }
+      };
+      shareBtn.addEventListener('click', async () => {
+        const u = await ctx.invoke('party_url');
+        const src = u && parseSource(u);
+        if (src) ctx.act({ src });
+        else ctx.toast('Open a page in the website window first');
+      });
 
       async function load(src) {
-        killPlayer();
+        killPlayer(ctx.native() && src?.type === 'web' && extOpen);
         cur = src;
         if (!src) { stage.innerHTML = '<div class="wp-empty"><b>Nothing playing yet</b></div>'; return; }
         if (src.type === 'yt') {
@@ -444,6 +457,17 @@ window.Party = (() => {
             pause: () => { hush(); v.pause(); },
             destroy: () => { v.pause(); v.removeAttribute('src'); v.load(); },
           };
+        } else if (ctx.native()) {
+          // a real window: it works with nearly every website (frames are refused by many of them)
+          stage.innerHTML = `<div class="wp-ext"><b>${esc(src.name || src.url)}</b>
+            <span>This website is open in its own window next to Nexus.</span>
+            <div class="wp-ext-btns"><button class="pbtn" type="button" data-ext-show>SHOW THE WINDOW</button><button class="pbtn ghost" type="button" data-ext-share>SHARE THE PAGE I AM ON</button><button class="pbtn ghost" type="button" data-ext-browser>OPEN IN MY BROWSER</button></div>
+            <small>Browse in that window. When you found the video, press <b>SHARE THE PAGE I AM ON</b> – everybody jumps to the same page (YouTube pages become fully synchronized). Playing and pausing inside a website is not synchronized, so press play together.</small></div>`;
+          stage.querySelector('[data-ext-show]').onclick = () => ctx.invoke('party_open', { url: src.url }).catch(() => {});
+          stage.querySelector('[data-ext-share]').onclick = () => shareBtn.click();
+          stage.querySelector('[data-ext-browser]').onclick = () => ctx.openUrl(src.url);
+          extOpen = true; shareBtn.hidden = false;
+          ctx.invoke('party_open', { url: src.url }).catch((e) => { note.hidden = false; note.textContent = `The website window could not be opened: ${e}`; });
         } else {
           const f = document.createElement('iframe');
           f.src = src.url; f.className = 'wp-frame';

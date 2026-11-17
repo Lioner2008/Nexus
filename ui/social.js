@@ -1524,6 +1524,7 @@ window.Social = (() => {
       room: () => V.room,
       refreshBar: () => { if (V.room) renderCallBar(); },
       openUrl: (url) => api.invoke('open_url', { url }),
+      invoke: (cmd, args) => api.invoke(cmd, args),
     });
     if (st.inited) return;
     st.inited = true;

@@ -52,7 +52,7 @@ test sound). Changes also apply to a running call.
 
 Press the gamepad button in a call to start something for everybody in the voice room (desktop app only):
 
-- **Watch party** – YouTube by default (paste a link). Also direct video links (`.mp4`, `.webm`, `.m3u8` …) and any website; save your own sites to the list. YouTube and video links are kept in sync (play, pause, skipping, latecomers); a plain website is shown to everybody but its playback cannot be synchronized, and sites that forbid being embedded stay blank (open them in the browser instead).
+- **Watch party** – YouTube by default (paste a link). Also direct video links (`.mp4`, `.webm`, `.m3u8` …) and any website; save your own sites to the list. YouTube and video links are kept in sync (play, pause, skipping, latecomers); any other website opens in a window of its own next to Nexus (so sites that refuse to be framed work too): browse there, press SHARE THIS PAGE and everybody jumps to the same page (a YouTube page becomes fully synchronized). Playing and pausing inside such a website is not synchronized.
 - **Texas Hold'em** – 2–8 players, blinds, side pots, 45 s per decision. Hole cards are only sent to their owner until showdown.
 - **Billiards** – rotation pool for 1–8 players, every pocketed ball scores its number.
 - **Mini golf** – six holes, everybody putts at the same time, fewest strokes wins.
