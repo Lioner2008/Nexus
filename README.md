@@ -76,6 +76,16 @@ The *TeamSpeak* tab talks to your running TeamSpeak 3 client through its **Clien
 In TeamSpeak enable *Tools → Options → Addons → ClientQuery* and paste the API key into Nexus.
 The key is stored locally only (`%APPDATA%\app.nexus.launcher\settings.json`).
 
+## Nexus for Android (chat + talk)
+
+A small phone app with the simple things: text chat (rooms, direct messages, @mentions) and talking
+(voice rooms and 1:1 calls with mute and "who is talking"). It logs in to the same Nexus server as the desktop app.
+
+- Source: `mobile/www` (plain HTML/JS, wrapped with Capacitor), built by `.github/workflows/android.yml`.
+- Release: push a tag like `mobile-v0.1.0` -> a pre-release with `Nexus-Mobile-v0.1.0.apk` appears (pre-release, so the desktop updater ignores it).
+- Install: open the `.apk` on the phone, allow "install from this source", enter the server address (`http://address:7777`) and log in or register.
+- Notes: the APK is debug-signed; voice pauses when the app is in the background; the connection to the server is plain http/ws.
+
 ## Hosting on Pterodactyl Panel
 
 `pterodactyl/` has a ready-made **egg** for hosting `nexus-server` on a [Pterodactyl](https://pterodactyl.io) panel (or any game-server host that uses one).
